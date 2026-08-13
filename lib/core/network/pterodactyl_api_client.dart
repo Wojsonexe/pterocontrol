@@ -1,0 +1,88 @@
+import 'package:dio/dio.dart';
+
+import '../error/app_exception.dart';
+import '../error/result.dart';
+import 'api_exception_mapper.dart';
+
+/// Low-level HTTP client for talking to a single Pterodactyl Panel instance.
+///
+/// This class deliberately knows nothing about specific endpoints (servers,
+/// files, backups, ...) — it only provides a safe, typed way to perform
+/// HTTP requests, and turns every possible failure (network, timeout, HTTP
+/// error, malformed body) into a [Result]/[AppException] instead of a raw
+/// exception.
+///
+/// Endpoint-specific API clients built in later steps (e.g. a future
+/// `ServersApi`) should be built *on top of* this class rather than reaching
+/// for [Dio] directly — this is the seam between "how do we talk HTTP" and
+/// "what does the Pterodactyl API look like".
+///
+/// One instance of [PterodactylApiClient] is scoped to exactly one
+/// Pterodactyl instance; see [PterodactylApiClientFactory].
+class PterodactylApiClient {
+  PterodactylApiClient({
+    required Dio dio,
+    ApiExceptionMapper exceptionMapper = const ApiExceptionMapper(),
+  })  : _dio = dio,
+        _exceptionMapper = exceptionMapper;
+
+  final Dio _dio;
+  final ApiExceptionMapper _exceptionMapper;
+
+  /// The instance this client talks to. Exposed mainly so tests (and,
+  /// later, debug logging) can verify a client was built for the instance
+  /// it claims to be — see instance-isolation tests in `features/instances`.
+  String get baseUrl => _dio.options.baseUrl;
+
+  Future<Result<T>> get<T>(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    required T Function(dynamic data) parser,
+  }) {
+    return _request(
+      () => _dio.get<dynamic>(path, queryParameters: queryParameters),
+      parser,
+    );
+  }
+
+  Future<Result<T>> post<T>(
+    String path, {
+    Object? data,
+    required T Function(dynamic data) parser,
+  }) {
+    return _request(() => _dio.post<dynamic>(path, data: data), parser);
+  }
+
+  Future<Result<T>> put<T>(
+    String path, {
+    Object? data,
+    required T Function(dynamic data) parser,
+  }) {
+    return _request(() => _dio.put<dynamic>(path, data: data), parser);
+  }
+
+  Future<Result<T>> delete<T>(
+    String path, {
+    required T Function(dynamic data) parser,
+  }) {
+    return _request(() => _dio.delete<dynamic>(path), parser);
+  }
+
+  Future<Result<T>> _request<T>(
+    Future<Response<dynamic>> Function() request,
+    T Function(dynamic data) parser,
+  ) async {
+    final Response<dynamic> response;
+    try {
+      response = await request();
+    } catch (error) {
+      return Failure<T>(_exceptionMapper.map(error));
+    }
+
+    try {
+      return Success<T>(parser(response.data));
+    } catch (error) {
+      return Failure<T>(InvalidResponseException(cause: error));
+    }
+  }
+}
