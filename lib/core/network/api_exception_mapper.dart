@@ -24,7 +24,7 @@ class ApiExceptionMapper {
       DioExceptionType.receiveTimeout =>
         RequestTimeoutException(cause: error),
       DioExceptionType.badResponse => _mapStatusCode(error),
-      DioExceptionType.cancel => UnknownException(cause: error),
+      DioExceptionType.cancel => CancelledException(cause: error),
       // connectionError, badCertificate, unknown, and any future value Dio
       // adds to this enum are all "could not get a usable response" cases.
       _ => NetworkException(cause: error),
@@ -37,6 +37,8 @@ class ApiExceptionMapper {
       401 => UnauthorizedException(cause: error),
       403 => ForbiddenException(cause: error),
       404 => NotFoundException(cause: error),
+      409 => ConflictException(cause: error),
+      422 => ValidationException(cause: error),
       _ => ServerException(cause: error, statusCode: statusCode),
     };
   }

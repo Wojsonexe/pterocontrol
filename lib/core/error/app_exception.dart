@@ -65,6 +65,21 @@ final class NotFoundException extends AppException {
       : super('Nie znaleziono zasobu.', cause: cause, statusCode: 404);
 }
 
+/// The request conflicts with the current state of the resource (HTTP
+/// 409) — e.g. the Files API rejecting a rename/move/create-folder
+/// because something already exists at the destination path.
+final class ConflictException extends AppException {
+  const ConflictException({Object? cause})
+      : super('Element o tej nazwie już istnieje.', cause: cause, statusCode: 409);
+}
+
+/// The request was well-formed but failed validation (HTTP 422) — e.g.
+/// an invalid file/folder name, a path the Files API rejects.
+final class ValidationException extends AppException {
+  const ValidationException({Object? cause})
+      : super('Nieprawidłowe dane. Sprawdź nazwę i spróbuj ponownie.', cause: cause, statusCode: 422);
+}
+
 /// The server responded with an unexpected error (HTTP 4xx/5xx not covered
 /// by a more specific exception above).
 final class ServerException extends AppException {
@@ -82,6 +97,15 @@ final class InvalidResponseException extends AppException {
 /// A local persistence operation (instance list, preferences, ...) failed.
 final class StorageException extends AppException {
   const StorageException(super.message, {super.cause});
+}
+
+/// The request was cancelled deliberately (a `CancelToken` the caller
+/// itself triggered — e.g. the user tapping "Anuluj" on an in-progress
+/// upload/download) — not a failure to report as an error at all. Kept
+/// distinct from [UnknownException] specifically so a cancel does not
+/// read as "something went wrong" in the UI.
+final class CancelledException extends AppException {
+  const CancelledException({Object? cause}) : super('Anulowano.', cause: cause);
 }
 
 /// Fallback for anything that does not fit the categories above.

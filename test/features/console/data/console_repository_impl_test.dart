@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -52,7 +53,7 @@ ConsoleRepositoryImpl _buildRepository({
 
 void main() {
   group('ConsoleRepositoryImpl — connection state transitions', () {
-    test('goes disconnected -> connecting -> connected on a successful connect', () async {
+    test('goes disconnected -> connecting -> authenticating -> connected on a successful connect', () async {
       final (:api, :requests) = _buildApi((_) async => _tokenResponse());
       final connector = FakeConsoleTransportConnector();
       final transport = FakeConsoleTransport();
@@ -66,12 +67,20 @@ void main() {
 
       await repository.connect();
       await pumpEventQueue();
-      expect(states, [ConsoleConnectionState.connecting]);
+      expect(
+        states,
+        [ConsoleConnectionState.connecting, ConsoleConnectionState.authenticating],
+        reason: 'the transport opens (connecting), then the auth frame is sent (authenticating) — '
+            'both happen before Wings ever replies',
+      );
 
       transport.pushFrame('auth success');
       await pumpEventQueue();
 
-      expect(states, [ConsoleConnectionState.connecting, ConsoleConnectionState.connected]);
+      expect(
+        states,
+        [ConsoleConnectionState.connecting, ConsoleConnectionState.authenticating, ConsoleConnectionState.connected],
+      );
       expect(requests, hasLength(1));
     });
   });
@@ -471,6 +480,30 @@ void main() {
       expect(defaultConsoleReconnectBackoff(4), const Duration(seconds: 16));
       expect(defaultConsoleReconnectBackoff(5), const Duration(seconds: 30), reason: 'capped, not 32s');
       expect(defaultConsoleReconnectBackoff(20), const Duration(seconds: 30), reason: 'stays capped for any later attempt');
+    });
+
+    test('jittered backoff stays within [base/2, base] and is actually random', () {
+      // A fixed seed makes the *sequence* deterministic while still
+      // exercising real randomization — this is not "assert the mock
+      // returned what the mock returns", it is checking the real jitter
+      // formula's output range and that it does not degenerate to a
+      // constant.
+      final random = Random(42);
+      final samples = List.generate(50, (_) => jitteredConsoleReconnectBackoff(3, random: random));
+
+      for (final sample in samples) {
+        expect(sample.inMilliseconds, greaterThanOrEqualTo(4000), reason: 'never less than base/2 for attempt 3 (8s base)');
+        expect(sample.inMilliseconds, lessThanOrEqualTo(8000), reason: 'never more than the base itself');
+      }
+      expect(samples.toSet().length, greaterThan(1), reason: 'jitter must actually vary, not collapse to one value');
+    });
+
+    test('jittered backoff never exceeds the 30s cap for a high attempt number', () {
+      final random = Random(7);
+      for (var i = 0; i < 20; i++) {
+        final sample = jitteredConsoleReconnectBackoff(20, random: random);
+        expect(sample.inMilliseconds, inInclusiveRange(15000, 30000));
+      }
     });
 
     test('a failed token fetch schedules a reconnect using the injected backoff, not a tight loop', () async {

@@ -31,6 +31,20 @@ String formatRate(double? bytesPerSecond) {
   return '${(kbPerSecond / 1024).toStringAsFixed(1)} MB/s';
 }
 
+/// Formats a byte count as a short, scale-appropriate size (B/KB/MB/GB)
+/// — the File Manager's counterpart to [formatBytesAsMb], which is
+/// deliberately *always* MB (server resource limits are configured in
+/// MB); a directory listing needs the actual scale, since a 200-byte
+/// config file showing "0 MB" reads as broken, not small.
+String formatFileSize(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  final kb = bytes / 1024;
+  if (kb < 1024) return '${kb.toStringAsFixed(kb < 10 ? 1 : 0)} KB';
+  final mb = kb / 1024;
+  if (mb < 1024) return '${mb.toStringAsFixed(mb < 10 ? 1 : 0)} MB';
+  return '${(mb / 1024).toStringAsFixed(1)} GB';
+}
+
 /// Formats [timestamp] relative to now — "aktualizacja: przed chwilą",
 /// "12 s temu" — for a sync-freshness label (`ServerRuntimeSyncState`'s
 /// most recent `observedAt`). Coarse on purpose: a user checking "is this

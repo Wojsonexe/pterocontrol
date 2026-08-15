@@ -43,6 +43,26 @@ dependencies:
   flutter_secure_storage: ^11.0.0
   web_socket_channel: ^3.0.3
 
+  # File Manager: native OS file picker for "choose a local file to
+  # upload" (Storage Access Framework on Android — no storage permission
+  # needed, see docs/ARCHITECTURE.md). Upload/download themselves reuse
+  # the existing `dio`-backed PterodactylApiClient; downloads are streamed
+  # (never buffered fully in memory) to this app's own external-files
+  # directory via [path_provider] — not an arbitrary user-chosen SAF
+  # location, since file_picker's own `saveFile()` API requires the bytes
+  # already in memory up front, which would defeat that streaming
+  # requirement. See `FileRepositoryImpl`/`file_manager_controller.dart`.
+  #
+  # file_picker pinned to a beta, not the latest *stable* (3.x — a
+  # pre-`saveFile()`, pre-null-safety-era API this app does not want):
+  # every file_picker release below 12.0.0-beta.1 pulls in win32 ^5.x,
+  # which conflicts with flutter_secure_storage's own
+  # (Windows-desktop-only) win32 ^6.x requirement — irrelevant to this
+  # Android-first app, but pub still resolves it. 12.0.0-beta.1+ is the
+  # actual fix upstream, not a downgrade taken to dodge the conflict.
+  file_picker: 12.0.0-beta.7
+  path_provider: ^2.1.6
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

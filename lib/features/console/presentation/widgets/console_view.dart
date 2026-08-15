@@ -281,6 +281,12 @@ AppStatusVisual consoleConnectionStatusVisual(ConsoleConnectionState state) {
         tone: AppStatusTone.pending,
         isAnimated: true,
       ),
+    ConsoleConnectionState.authenticating => const AppStatusVisual(
+        icon: Icons.sync,
+        label: 'Uwierzytelnianie…',
+        tone: AppStatusTone.pending,
+        isAnimated: true,
+      ),
     ConsoleConnectionState.connected =>
       const AppStatusVisual(icon: Icons.check_circle, label: 'Połączono', tone: AppStatusTone.success),
     ConsoleConnectionState.reconnecting => const AppStatusVisual(
@@ -332,6 +338,7 @@ class _ConsoleOutput extends StatelessWidget {
                 if (state.events.isEmpty) {
                   final message = switch (state.connectionState) {
                     ConsoleConnectionState.connecting => 'Łączenie z konsolą…',
+                    ConsoleConnectionState.authenticating => 'Uwierzytelnianie w konsoli…',
                     ConsoleConnectionState.reconnecting => 'Ponowne łączenie…',
                     ConsoleConnectionState.error => 'Nie udało się połączyć z konsolą.',
                     ConsoleConnectionState.disconnected => 'Konsola rozłączona.',
