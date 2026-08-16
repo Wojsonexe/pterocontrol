@@ -1,6 +1,6 @@
 # Pterocontrol Control Plane — stan implementacji
 
-Ostatnia aktualizacja: 2026-08-16, branch `feature/control-plane-mvp`, ostatni commit `49583e0`.
+Ostatnia aktualizacja: 2026-08-16, branch `feature/control-plane-mvp`, ostatni commit `4ebbd3f`.
 
 Dokument-punkt-kontrolny w trybie autonomicznej implementacji. Kolejna sesja: przeczytaj to w całości, potem kontynuuj od sekcji "Następny konkretny krok" — nie projektuj architektury od nowa, jest już ustalona i częściowo zaimplementowana.
 
@@ -101,11 +101,18 @@ Repo to Flutter (`lib/`, `android/`, `ios/`, `test/`, korzeń repo) + backend ob
 - Zweryfikowane REALNIE (tymczasowy Postgres+RabbitMQ w Dockerze, oba serwisy jako prawdziwe procesy, prawdziwy ruch HTTP do zewnętrznych usług — **httpbin.org** jako kontrolowany, realny odbiornik webhooków): SSRF blokuje kanał wskazujący na `169.254.169.254` (`400`, request nigdy nie wychodzi) → `AlertRule`+`NotificationChannel` (httpbin.org/post) → sztuczny `ResourceSnapshot` CPU=97.2% → tick evaluatora → `Alert` → tick konsumenta → **realny POST na httpbin.org** → `Notification` `DELIVERED` z prawdziwym `sentAt` (748ms faktycznego round-trip przez internet, potwierdzone RabbitMQ Management API: `notifications.worker deliver=1/ack=1`). Cooldown poprawnie zablokował natychmiastowy retrigger (odtworzone dwukrotnie — raz przypadkowo tuż przy granicy 60s, raz jednoznacznie po pełnym upływie), a fan-out do **dwóch** kanałów na tym samym `Alert` dał dwa niezależne wyniki: kanał `httpbin.org/post` → `DELIVERED`, kanał `httpbin.org/status/404` → `FAILED` (`lastError: "Webhook responded with 404"`, `sentAt: null`, klasyfikacja `permanent` → prosto do `notifications.dlq` bez retry, potwierdzone Management API i logiem workera).
 - Testy: 10 nowych w `packages/rabbitmq` (`queue-consumer.spec.ts` — generyczna wersja retry/DLQ/idempotency, w tym duplikat-po-DLQ i resume-po-reconnect), 7 w `control-plane-api` (`notifications.service.spec.ts`), 24 w `federation-worker` (`webhook-http.client`, `notification-dispatch.handler`, `notification-consumer.service`).
 
+### Backups — proxy do Pterodactyl Client API
+- Synchroniczny proxy (jak Power Control z FAZA 5/6 — Pterodactyl sam planuje faktyczne tworzenie backupu asynchronicznie po swojej stronie, więc żaden nowy przepływ RabbitMQ nie jest tu potrzebny). `PterodactylHttpClient` zyskał `delete()`. `PterodactylClientApiClient`: `listBackups`/`createBackup`/`getBackup`/`getBackupDownloadUrl`/`deleteBackup`/`restoreBackup`/`toggleBackupLock`.
+- **Ważne zastrzeżenie co do źródła kontraktu API** (uczciwie, nie ukryte): ten kontrakt **nie został zweryfikowany względem tej apki Flutter** — sprawdzone bezpośrednio w kodzie (`server_detail_screen.dart`): Flutter nie ma żadnej implementacji backupów, zakładka to dosłowny placeholder "Kopie zapasowe — pojawi się w kolejnej aktualizacji". Endpointy (`GET/POST .../backups`, `GET .../backups/{uuid}`, `.../download`, `DELETE`, `.../restore`, `.../lock`) pochodzą z rzeczywistego, publicznie udokumentowanego kontraktu Pterodactyl Client API v1 (ogólna wiedza o tym open source projekcie) — to samo już wcześniej udokumentowane ograniczenie co cała reszta Federation Layer: nigdy nie uderzyły w żywy panel. Do zweryfikowania/poprawienia, jeśli/gdy dostęp do prawdziwego panelu Pterodactyla stanie się dostępny.
+- `BackupsController`/`BackupsService` (nowy moduł `backups`, `/servers/:serverId/backups`) — tenant-scoped przez `ServersService`/`InstancesService.findOneForTenant()`, RBAC (`owner`/`admin` dla create/delete/restore/lock), `AuditLog` na każdą mutującą operację (sukces i porażka, ten sam wzorzec co `sendPowerAction`), błędy Pterodactyla → `502` (nie surowy `500`). Brak lokalnej tabeli `Backup` w tym MVP — lista zawsze pobierana live.
+- Zweryfikowane REALNIE (ta sama metodologia co cała reszta Federation Layer — realny ruch sieciowy do `https://example.com`, jedyny publicznie dostępny substytut bez prawdziwego Pterodactyla): `GET /servers/:id/backups` → realny request → `404` od `example.com` → `502` z czytelnym komunikatem; `POST /servers/:id/backups` → `405` od `example.com` → `502` + **potwierdzony realny wpis w `AuditLog`** (`result:"error"`, `metadata.message` dokładnie taki jak w odpowiedzi).
+- Testy: 14 nowych w `pterodactyl-sdk` (`delete()` + wszystkie 7 metod backupów), 11 w `backups.service.spec.ts` (tenant isolation, mapowanie 502, `AuditLog` sukces/porażka).
+
 ## Stan testów
 
 ```
-34 suity, 223 testy, wszystkie przechodzą
-  (91 control-plane-api + 65 federation-worker + 42 pterodactyl-sdk + 22 rabbitmq + 3 secrets)
+39 suit, 246 testów, wszystkie przechodzą
+  (100 control-plane-api + 65 federation-worker + 56 pterodactyl-sdk + 22 rabbitmq + 3 secrets)
 npm run typecheck  -> czysty (wszystkie 5 workspace'ów)
 npm run lint        -> czysty (wszystkie 5 workspace'ów)
 ```
@@ -131,6 +138,7 @@ npm run start:dev
 - **Brak plików/konsoli WebSocket** przez Control Plane.
 - **Brak testów kolejności wiadomości (message-ordering)** w `federation-worker` — nie było jeszcze przypadku w kodzie, gdzie kolejność między dwiema wiadomościami faktycznie ma znaczenie (każdy handler operuje na innym jobId niezależnie).
 - **Notifications ma tylko jeden typ kanału (WEBHOOK)** — enum otwarty na SLACK/EMAIL, ale niezaimplementowane (EMAIL wymagałby prawdziwych danych SMTP, których nie mam — świadomie odłożone, nie fake'owane).
+- **Kontrakt API dla Backups nie jest zweryfikowany względem Flutter/istniejącego kodu** (patrz sekcja Backups wyżej) — pochodzi z ogólnej wiedzy o publicznym Pterodactyl API, nie z lokalnego źródła prawdy. To samo dotyczyć będzie Server Configuration (Startup/Environment) — Flutter ma to jako `ComingSoonView` bez REST, więc kontrakt też będzie trzeba oprzeć na ogólnej wiedzy o Pterodactyl API, jawnie to zaznaczając.
 - **Nic z Backups wzwyż nie istnieje**: Server Configuration, Schedules/Allocations/Databases (Pterodactyl-side), Database Gateway (osobny serwis), Mobile client (tryb Control Plane), Security hardening review, pełne testy integracyjne/E2E, produkcyjny deployment (Prometheus/Grafana/Traefik/TLS).
 - **`infra/docker-compose.yml` wystawia RabbitMQ Management UI na `0.0.0.0:15672`** — akceptowalne dla lokalnego dev, ale mandat RabbitMQ wymaga wprost, żeby nigdy nie było to publicznie dostępne w produkcji; do naprawienia w fazie production/deployment (osobny compose/profil, port bindowany tylko na localhost albo VPN).
 
@@ -141,12 +149,11 @@ npm run start:dev
 
 ## Następny konkretny krok
 
-**Backups.** Prawdziwy, udokumentowany kontrakt Pterodactyl Client API (zweryfikowany wcześniej w tej sesji na podstawie działającej apki Flutter) ma: `GET /api/client/servers/{id}/backups` (lista), `POST /api/client/servers/{id}/backups` (utwórz), `GET .../backups/{backup}` (szczegóły), `GET .../backups/{backup}/download` (URL do pobrania), `DELETE .../backups/{backup}`, `POST .../backups/{backup}/restore`, `POST .../backups/{backup}/lock` (toggle). W tej kolejności:
+**Server Configuration** (Startup variables + Environment). Real, publicznie udokumentowany kontrakt Pterodactyl Client API v1: `GET /api/client/servers/{id}/startup` (lista zmiennych startowych z ich aktualnymi wartościami, opisami, regułami walidacji), `PUT /api/client/servers/{id}/startup/variable` (body `{key, value}`, aktualizuje jedną zmienną). **To samo zastrzeżenie co przy Backups** — Flutter (`server_detail_screen.dart`) ma zakładkę Startup/Environment jako `ComingSoonView` bez REST, więc ten kontrakt też pochodzi z ogólnej wiedzy o Pterodactyl API, nie z lokalnego źródła prawdy — zaznaczyć to jawnie w kodzie i w tym dokumencie, tak jak przy Backups. W tej kolejności:
 
-1. **Decyzja architektoniczna (analogicznie do FAZA 5/6 Power Control): proxy synchroniczny, NIE nowy przepływ RabbitMQ.** Każde z powyższych wywołań Pterodactyla jest pojedynczym, szybkim requestem (Pterodactyl samo planuje faktyczne tworzenie backupu asynchronicznie po swojej stronie) — dokładnie ten sam profil co `POST /servers/:id/power`, które świadomie zostało synchroniczne. Nie budować nowej kolejki/handlera dla tego, chyba że w trakcie implementacji okaże się, że jakieś wywołanie jest realnie długotrwałe.
-2. `PterodactylClientApiClient` (w `@pterocontrol/pterodactyl-sdk`, współdzielony z `federation-worker` tak jak reszta) — dodać metody `listBackups`, `createBackup`, `getBackup`, `getBackupDownloadUrl`, `deleteBackup`, `restoreBackup`, `toggleBackupLock`, zweryfikowane pod kątem realnego kształtu odpowiedzi Pterodactyl API (nie zgadywać - sprawdzić dokładnie tak samo jak przy `getResourceUsage`/`sendPowerAction`).
-3. `BackupsController`/`BackupsService` w `control-plane-api` (nowy moduł `backups`) — proxy 1:1 do powyższych metod, tenant-scoped przez istniejący `ServersService.findOneForTenant()`, RBAC (`owner`/`admin` dla create/delete/restore, wszyscy dla list/details/download-url). Każda mutująca operacja (create/delete/restore/lock) zapisuje `AuditLog` (sukces i porażka) — dokładnie ten sam wzorzec co `sendPowerAction`.
-4. Brak lokalnej tabeli `Backup` w tym MVP (świadoma decyzja zakresu) — lista backupów zawsze pobierana live z Pterodactyla, nie cache'owana/synchronizowana jak `Server`. Do rewizji tylko jeśli okaże się, że potrzebne jest wyszukiwanie/filtrowanie backupów między instancjami.
-5. Testy: unit (proxy methods, tenant isolation, AuditLog na sukces/porażkę, mapowanie błędów Pterodactyl→502 jak w `getResources`/`sendPowerAction`), weryfikacja live realnym ruchem sieciowym do `https://example.com` (ta sama, udokumentowana granica co cała reszta Federation Layer — brak dostępu do prawdziwego Pterodactyla).
+1. Ten sam profil architektoniczny co Backups/Power Control: proxy synchroniczny, bez nowego przepływu RabbitMQ.
+2. `PterodactylClientApiClient`: `getStartupVariables(baseUrl, apiKey, serverIdentifier)` (zwraca listę `{envVariable, name, description, defaultValue, serverValue, isEditable, rules}`), `updateStartupVariable(baseUrl, apiKey, serverIdentifier, key, value)`.
+3. `ServerConfigController`/`ServerConfigService` w `control-plane-api` — `GET /servers/:id/startup`, `PUT /servers/:id/startup/variable` (RBAC `owner`/`admin` dla update, `AuditLog` na update sukces/porażka).
+4. Testy: unit (proxy, tenant isolation, walidacja `isEditable` po stronie klienta — nie polegać wyłącznie na Pterodactylu do odrzucenia edycji niedozwolonej zmiennej), weryfikacja live do `https://example.com` (ta sama metodologia).
 
-Po Backups: Server Configuration → Schedules/Allocations/Databases/Activity → Database Gateway → Flutter → security review → E2E → production/deployment, zgodnie z listą uzgodnioną z użytkownikiem. Kontynuować autonomicznie, bez zatrzymywania się na potwierdzenie między etapami.
+Po Server Configuration: Schedules/Allocations/Databases/Activity → Database Gateway → Flutter → security review → E2E → production/deployment, zgodnie z listą uzgodnioną z użytkownikiem. Kontynuować autonomicznie, bez zatrzymywania się na potwierdzenie między etapami.
