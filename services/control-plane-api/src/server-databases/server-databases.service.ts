@@ -7,15 +7,19 @@ import {
 import { AuditService } from '../audit/audit.service';
 import { ServerCredentialResolverService } from '../servers/server-credential-resolver.service';
 import { CreateServerDatabaseDto } from './dto/create-server-database.dto';
+import { ServerDatabaseCredentialService } from './server-database-credential.service';
 
 /**
  * Per-server MySQL databases provisioned through Pterodactyl's own
- * database host - NOT the future "Database Gateway" (a separate,
- * planned Control Plane feature for direct SQL access, see
- * IMPLEMENTATION_STATUS.md). Same synchronous-proxy profile as Backups/
- * Schedules/Allocations. Credentials (the generated password) are never
- * written to AuditLog metadata - only the database id/name are, same
- * "no secrets in logs" posture as SecretsService/InstanceCredential.
+ * database host - distinct from Database Gateway (direct SQL execution,
+ * ../database-gateway), which this service feeds: create() and
+ * rotatePassword() are the only two moments Pterodactyl ever returns the
+ * plaintext password, so both persist it (encrypted) via
+ * ServerDatabaseCredentialService for the Gateway to use later. Otherwise
+ * same synchronous-proxy profile as Backups/Schedules/Allocations.
+ * Credentials (the generated password) are never written to AuditLog
+ * metadata - only the database id/name are, same "no secrets in logs"
+ * posture as SecretsService/InstanceCredential.
  */
 @Injectable()
 export class ServerDatabasesService {
@@ -23,6 +27,7 @@ export class ServerDatabasesService {
     private readonly credentials: ServerCredentialResolverService,
     private readonly clientApi: PterodactylClientApiClient,
     private readonly auditService: AuditService,
+    private readonly credentialStore: ServerDatabaseCredentialService,
   ) {}
 
   async list(tenantId: string, serverId: string): Promise<PterodactylServerDatabaseDto[]> {
@@ -64,6 +69,7 @@ export class ServerDatabasesService {
         result: 'success',
         metadata: { databaseId: database.id, name: database.name },
       });
+      await this.credentialStore.upsert(tenantId, serverId, database);
       return database;
     } catch (error) {
       await this.recordFailure(tenantId, actorId, 'server_database.create', serverId, error);
@@ -97,6 +103,7 @@ export class ServerDatabasesService {
         result: 'success',
         metadata: { databaseId },
       });
+      await this.credentialStore.upsert(tenantId, serverId, database);
       return database;
     } catch (error) {
       await this.recordFailure(
@@ -132,6 +139,7 @@ export class ServerDatabasesService {
         result: 'success',
         metadata: { databaseId },
       });
+      await this.credentialStore.remove(serverId, databaseId);
     } catch (error) {
       await this.recordFailure(
         tenantId,

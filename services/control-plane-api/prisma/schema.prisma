@@ -112,8 +112,9 @@ model Server {
   lastSyncedAt    DateTime @default(now())
   createdAt       DateTime @default(now())
 
-  instance  PterodactylInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  instance  PterodactylInstance        @relation(fields: [instanceId], references: [id], onDelete: Cascade)
   snapshots ResourceSnapshot[]
+  databaseCredentials ServerDatabaseCredential[]
 
   @@unique([instanceId, pterodactylUuid])
   @@index([tenantId])
@@ -304,4 +305,35 @@ model Notification {
 
   @@index([tenantId, createdAt])
   @@index([channelId])
+}
+
+// Database Gateway (direct SQL access to a server's Pterodactyl-provisioned
+// MySQL database, distinct from the server-databases proxy which only calls
+// Pterodactyl's own management endpoints). Pterodactyl returns the database
+// password in plaintext exactly once, at create/rotate-password time - this
+// table is how DatabaseGatewayService gets it again on every later query,
+// without asking Pterodactyl (which can't give it back) or the user (which
+// was the rejected alternative - see IMPLEMENTATION_STATUS.md for the
+// explicit user decision to persist it instead). ciphertext uses the same
+// SecretsService/AES-256-GCM as InstanceCredential. One row per Pterodactyl
+// database id; ServerDatabasesService upserts it on create/rotate and
+// deletes it on database delete, so a missing row here means either the
+// database was never queried through the Gateway or was deleted.
+model ServerDatabaseCredential {
+  id                     String   @id @default(uuid())
+  tenantId               String
+  serverId               String
+  pterodactylDatabaseId  String
+  host                   String
+  port                   Int
+  databaseName           String
+  username               String
+  ciphertext             Bytes
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@unique([serverId, pterodactylDatabaseId])
+  @@index([tenantId])
 }

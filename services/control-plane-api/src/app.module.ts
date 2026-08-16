@@ -6,6 +6,7 @@ import { AllocationsModule } from './allocations/allocations.module';
 import { AuthModule } from './auth/auth.module';
 import { BackupsModule } from './backups/backups.module';
 import { validateEnv } from './config/env.validation';
+import { DatabaseGatewayModule } from './database-gateway/database-gateway.module';
 import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
 import { InstancesModule } from './instances/instances.module';
@@ -39,6 +40,7 @@ import { TenantsModule } from './tenants/tenants.module';
     AllocationsModule,
     ServerDatabasesModule,
     ActivityModule,
+    DatabaseGatewayModule,
   ],
 })
 export class AppModule {}
