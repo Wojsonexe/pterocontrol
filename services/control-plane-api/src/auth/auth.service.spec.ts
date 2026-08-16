@@ -1,5 +1,7 @@
+import { ForbiddenException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
+import { TenantsService } from '../tenants/tenants.service';
 import { UsersService } from '../users/users.service';
 import { AuthService } from './auth.service';
 import { PasswordService } from './password.service';
@@ -9,6 +11,7 @@ describe('AuthService', () => {
   const usersServiceMock = { findByEmail: jest.fn() };
   const passwordServiceMock = { verify: jest.fn(), hash: jest.fn() };
   const jwtServiceMock = { signAsync: jest.fn() };
+  const tenantsServiceMock = { findPrimaryMembership: jest.fn() };
   const fakeUser = {
     id: 'u-1',
     email: 'dev@pterocontrol.local',
@@ -20,6 +23,7 @@ describe('AuthService', () => {
     usersServiceMock.findByEmail.mockReset();
     passwordServiceMock.verify.mockReset();
     jwtServiceMock.signAsync.mockReset();
+    tenantsServiceMock.findPrimaryMembership.mockReset();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -27,6 +31,7 @@ describe('AuthService', () => {
         { provide: UsersService, useValue: usersServiceMock },
         { provide: PasswordService, useValue: passwordServiceMock },
         { provide: JwtService, useValue: jwtServiceMock },
+        { provide: TenantsService, useValue: tenantsServiceMock },
       ],
     }).compile();
 
@@ -73,7 +78,11 @@ describe('AuthService', () => {
     expect(result).toBeNull();
   });
 
-  it('signs a JWT containing the user id and email', async () => {
+  it('signs a JWT containing the user id, email, tenantId and role', async () => {
+    tenantsServiceMock.findPrimaryMembership.mockResolvedValueOnce({
+      tenantId: 't-1',
+      role: 'owner',
+    });
     jwtServiceMock.signAsync.mockResolvedValueOnce('signed.jwt.token');
 
     const result = await service.login({
@@ -86,6 +95,21 @@ describe('AuthService', () => {
     expect(jwtServiceMock.signAsync).toHaveBeenCalledWith({
       sub: 'u-1',
       email: 'dev@pterocontrol.local',
+      tenantId: 't-1',
+      role: 'owner',
     });
+  });
+
+  it('refuses to log in a user with no tenant membership', async () => {
+    tenantsServiceMock.findPrimaryMembership.mockResolvedValueOnce(null);
+
+    await expect(
+      service.login({
+        id: 'u-1',
+        email: 'dev@pterocontrol.local',
+        createdAt: new Date('2026-01-01'),
+      }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(jwtServiceMock.signAsync).not.toHaveBeenCalled();
   });
 });
