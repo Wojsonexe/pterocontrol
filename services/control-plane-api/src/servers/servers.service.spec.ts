@@ -1,10 +1,13 @@
 import { BadGatewayException, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  PterodactylApplicationApiClient,
+  PterodactylAuthError,
+  PterodactylClientApiClient,
+  PterodactylNotFoundError,
+} from '@pterocontrol/pterodactyl-sdk';
 import { AuditService } from '../audit/audit.service';
 import { EventsService } from '../events/events.service';
 import { InstancesService } from '../instances/instances.service';
-import { PterodactylApplicationApiClient } from '../pterodactyl/pterodactyl-application-api.client';
-import { PterodactylClientApiClient } from '../pterodactyl/pterodactyl-client-api.client';
-import { PterodactylAuthError, PterodactylNotFoundError } from '../pterodactyl/pterodactyl-http.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SecretsService } from '../secrets/secrets.service';
 import { ServersService } from './servers.service';

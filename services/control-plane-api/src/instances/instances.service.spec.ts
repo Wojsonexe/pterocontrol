@@ -1,9 +1,11 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { CredentialKind, InstanceStatus } from '@prisma/client';
+import {
+  PterodactylApplicationApiClient,
+  PterodactylAuthError,
+  SsrfValidatorService,
+} from '@pterocontrol/pterodactyl-sdk';
 import { EventsService } from '../events/events.service';
-import { PterodactylApplicationApiClient } from '../pterodactyl/pterodactyl-application-api.client';
-import { PterodactylAuthError } from '../pterodactyl/pterodactyl-http.client';
-import { SsrfValidatorService } from '../pterodactyl/ssrf-validator.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SecretsService } from '../secrets/secrets.service';
 import { InstancesService } from './instances.service';

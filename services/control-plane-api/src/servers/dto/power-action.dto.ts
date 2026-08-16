@@ -1,5 +1,5 @@
+import { PterodactylPowerSignal } from '@pterocontrol/pterodactyl-sdk';
 import { IsIn } from 'class-validator';
-import { PterodactylPowerSignal } from '../../pterodactyl/pterodactyl-client-api.client';
 
 const POWER_SIGNALS: PterodactylPowerSignal[] = ['start', 'stop', 'restart', 'kill'];
 

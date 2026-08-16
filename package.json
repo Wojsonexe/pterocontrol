@@ -4,6 +4,7 @@
   "private": true,
   "description": "Pterocontrol Control Plane — backend workspace (obok istniejącej aplikacji Flutter w tym samym repo).",
   "workspaces": [
-    "services/*"
+    "services/*",
+    "packages/*"
   ]
 }

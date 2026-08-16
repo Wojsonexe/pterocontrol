@@ -9,10 +9,12 @@ import {
   InstanceStatus,
   PterodactylInstance,
 } from '@prisma/client';
+import {
+  PterodactylApplicationApiClient,
+  PterodactylError,
+  SsrfValidatorService,
+} from '@pterocontrol/pterodactyl-sdk';
 import { EventsService } from '../events/events.service';
-import { PterodactylApplicationApiClient } from '../pterodactyl/pterodactyl-application-api.client';
-import { PterodactylError } from '../pterodactyl/pterodactyl-http.client';
-import { SsrfValidatorService } from '../pterodactyl/ssrf-validator.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SecretsService } from '../secrets/secrets.service';
 import { CreateInstanceDto } from './dto/create-instance.dto';

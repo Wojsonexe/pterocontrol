@@ -8,11 +8,11 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { PterodactylResourceUsageDto } from '@pterocontrol/pterodactyl-sdk';
 import { Server } from '@prisma/client';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { AuthenticatedUser } from '../auth/guards/jwt-auth.guard';
-import { PterodactylResourceUsageDto } from '../pterodactyl/pterodactyl-client-api.client';
 import { PowerActionDto } from './dto/power-action.dto';
 import { ResourceSnapshotDto, ServersService, SyncResult } from './servers.service';
 

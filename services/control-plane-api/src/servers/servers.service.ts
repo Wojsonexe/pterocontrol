@@ -5,17 +5,17 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import {
+  PterodactylApplicationApiClient,
+  PterodactylClientApiClient,
+  PterodactylError,
+  PterodactylPowerSignal,
+  PterodactylResourceUsageDto,
+} from '@pterocontrol/pterodactyl-sdk';
 import { CredentialKind, ResourceSnapshot, Server } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { EventsService } from '../events/events.service';
 import { InstancesService } from '../instances/instances.service';
-import { PterodactylApplicationApiClient } from '../pterodactyl/pterodactyl-application-api.client';
-import {
-  PterodactylClientApiClient,
-  PterodactylPowerSignal,
-  PterodactylResourceUsageDto,
-} from '../pterodactyl/pterodactyl-client-api.client';
-import { PterodactylError } from '../pterodactyl/pterodactyl-http.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SecretsService } from '../secrets/secrets.service';
 
