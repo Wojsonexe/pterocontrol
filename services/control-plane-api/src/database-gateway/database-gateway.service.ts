@@ -1,4 +1,5 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
+import { SsrfValidatorService } from '@pterocontrol/pterodactyl-sdk';
 import { QueryResult as MySqlQueryResult, RowDataPacket } from 'mysql2/promise';
 import { AuditService } from '../audit/audit.service';
 import { ServerDatabaseCredentialService } from '../server-databases/server-database-credential.service';
@@ -34,6 +35,16 @@ export interface QueryResult {
  * password persisted encrypted rather than re-requested every time - see
  * IMPLEMENTATION_STATUS.md for the decision record. RBAC-gated to
  * owner/admin at the controller (raw SQL is a high-privilege action).
+ *
+ * `credential.host` is re-validated with `SsrfValidatorService.
+ * assertSafeHost()` on every call, immediately before connecting - it
+ * comes from a Pterodactyl instance's own API response (a
+ * database-provisioning call), not from anything this app's own config
+ * controls. A compromised or malicious panel could otherwise report an
+ * internal address (e.g. a cloud metadata IP) as "the database host" and
+ * get this backend to open a raw TCP connection to it - the same class of
+ * risk `assertSafe` already exists to block for `PterodactylInstance.
+ * baseUrl`, applied here to a host this service does not choose itself.
  */
 @Injectable()
 export class DatabaseGatewayService {
@@ -41,6 +52,7 @@ export class DatabaseGatewayService {
     private readonly credentialStore: ServerDatabaseCredentialService,
     private readonly connectionFactory: MySqlConnectionFactory,
     private readonly auditService: AuditService,
+    private readonly ssrfValidator: SsrfValidatorService,
   ) {}
 
   async execute(
@@ -52,6 +64,11 @@ export class DatabaseGatewayService {
   ): Promise<QueryResult> {
     validateSql(sql);
     const credential = await this.credentialStore.resolve(tenantId, serverId, databaseId);
+    // allowPrivate: a node's database host is routinely an RFC1918 address
+    // by design (see SsrfValidatorService.assertSafeHost's doc comment) -
+    // only loopback/link-local/metadata are rejected here, not the whole
+    // private range.
+    await this.ssrfValidator.assertSafeHost(credential.host, { allowPrivate: true });
 
     const connection = await this.connectionFactory.connect({
       host: credential.host,

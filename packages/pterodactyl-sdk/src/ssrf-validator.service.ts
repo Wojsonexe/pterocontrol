@@ -19,18 +19,41 @@ export class SsrfValidatorService {
     const url = this.parseUrl(rawUrl);
     this.assertAllowedScheme(url);
     this.assertAllowedPort(url);
+    await this.assertSafeHost(url.hostname);
+  }
 
-    const addresses = await this.resolveHost(url.hostname);
+  /**
+   * The same address-resolution/blocklist check as `assertSafe`, without
+   * the https-only/port-allowlist rules - for callers that open a
+   * non-HTTP connection to a host they don't control the scheme/port of.
+   * Added for `DatabaseGatewayService` (control-plane-api): the MySQL
+   * host/port it connects to comes from a Pterodactyl instance's own API
+   * response (a database-provisioning call), not from this app's own
+   * config - a compromised or malicious panel could report an internal
+   * address (e.g. a cloud metadata IP) as the "database host" and get
+   * this backend to open a raw TCP connection to it, the same class of
+   * risk `assertSafe` exists to block for `PterodactylInstance.baseUrl`.
+   *
+   * `allowPrivate` (default `false`, `assertSafe`'s behaviour) exists for
+   * exactly that caller: a Pterodactyl node's own database host is
+   * routinely an RFC1918 address by design (the game node and its MySQL
+   * host typically share a private network) - blocking all private
+   * ranges there would break the common, legitimate deployment instead of
+   * a real attack. With `allowPrivate: true`, RFC1918/ULA ranges are
+   * permitted but loopback and link-local/metadata addresses (never a
+   * legitimate database host) are still rejected.
+   */
+  async assertSafeHost(hostname: string, options?: { allowPrivate?: boolean }): Promise<void> {
+    const allowPrivate = options?.allowPrivate ?? false;
+    const addresses = await this.resolveHost(hostname);
     if (addresses.length === 0) {
-      throw new BadRequestException(
-        `Could not resolve host: ${url.hostname}`,
-      );
+      throw new BadRequestException(`Could not resolve host: ${hostname}`);
     }
 
     for (const address of addresses) {
-      if (this.isBlockedAddress(address)) {
+      if (this.isBlockedAddress(address, allowPrivate)) {
         throw new BadRequestException(
-          `${url.hostname} resolves to a private, loopback, link-local, or otherwise disallowed address (${address})`,
+          `${hostname} resolves to a loopback, link-local, metadata, or otherwise disallowed address (${address})`,
         );
       }
     }
@@ -74,36 +97,37 @@ export class SsrfValidatorService {
     return addresses;
   }
 
-  private isBlockedAddress(address: string): boolean {
+  private isBlockedAddress(address: string, allowPrivate: boolean): boolean {
     const version = isIP(address);
-    if (version === 4) return this.isBlockedIPv4(address);
-    if (version === 6) return this.isBlockedIPv6(address);
+    if (version === 4) return this.isBlockedIPv4(address, allowPrivate);
+    if (version === 6) return this.isBlockedIPv6(address, allowPrivate);
     return true; // not a syntactically valid IP - block defensively
   }
 
-  private isBlockedIPv4(address: string): boolean {
+  private isBlockedIPv4(address: string, allowPrivate: boolean): boolean {
     const octets = address.split('.').map(Number);
     if (octets.length !== 4 || octets.some((o) => Number.isNaN(o))) {
       return true;
     }
     const [a, b] = octets;
 
-    if (a === 127) return true; // loopback (127.0.0.0/8)
-    if (a === 10) return true; // private (10.0.0.0/8)
-    if (a === 172 && b >= 16 && b <= 31) return true; // private (172.16.0.0/12)
-    if (a === 192 && b === 168) return true; // private (192.168.0.0/16)
+    if (a === 127) return true; // loopback (127.0.0.0/8) - never a legitimate remote host
     if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254 metadata
     if (a === 0) return true; // "this network" (0.0.0.0/8)
     if (a >= 224) return true; // multicast + reserved (224.0.0.0/4 and above)
+    if (allowPrivate) return false;
+    if (a === 10) return true; // private (10.0.0.0/8)
+    if (a === 172 && b >= 16 && b <= 31) return true; // private (172.16.0.0/12)
+    if (a === 192 && b === 168) return true; // private (192.168.0.0/16)
     return false;
   }
 
-  private isBlockedIPv6(address: string): boolean {
+  private isBlockedIPv6(address: string, allowPrivate: boolean): boolean {
     const normalized = address.toLowerCase();
 
     if (normalized === '::1' || normalized === '::') return true; // loopback / unspecified
     if (normalized.startsWith('fe80:')) return true; // link-local (fe80::/10)
-    if (normalized.startsWith('fc') || normalized.startsWith('fd')) {
+    if (!allowPrivate && (normalized.startsWith('fc') || normalized.startsWith('fd'))) {
       return true; // unique local (fc00::/7)
     }
 
@@ -111,7 +135,7 @@ export class SsrfValidatorService {
     // address rather than letting it slip past the checks above.
     const mappedMatch = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(normalized);
     if (mappedMatch) {
-      return this.isBlockedIPv4(mappedMatch[1]);
+      return this.isBlockedIPv4(mappedMatch[1], allowPrivate);
     }
 
     return false;

@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: pterocontrol_dev_password
       POSTGRES_DB: pterocontrol
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +22,7 @@ services:
     container_name: pterocontrol-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -39,8 +39,15 @@ services:
       RABBITMQ_DEFAULT_USER: pterocontrol
       RABBITMQ_DEFAULT_PASS: pterocontrol_dev_password
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      # Management UI - never bind this to 0.0.0.0. It has no MFA and the
+      # only credential gating it is RABBITMQ_DEFAULT_PASS above (a
+      # hardcoded local-dev password) - loopback-only keeps it reachable
+      # for local development without exposing it on the host's network
+      # interfaces. Production deployment needs its own compose/profile
+      # with this behind a VPN or not published at all, not a repeat of
+      # this file's dev-only defaults.
+      - "127.0.0.1:15672:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:

@@ -1,4 +1,5 @@
 import { BadGatewayException, BadRequestException } from '@nestjs/common';
+import { SsrfValidatorService } from '@pterocontrol/pterodactyl-sdk';
 import { AuditService } from '../audit/audit.service';
 import { ServerDatabaseCredentialService } from '../server-databases/server-database-credential.service';
 import { DatabaseGatewayService } from './database-gateway.service';
@@ -9,6 +10,9 @@ describe('DatabaseGatewayService', () => {
   const connectionFactoryMock = { connect: jest.fn() };
   const auditServiceMock = {
     record: jest.fn<Promise<void>, [{ result: string; metadata: Record<string, unknown> }]>(),
+  };
+  const ssrfValidatorMock = {
+    assertSafeHost: jest.fn<Promise<void>, [string, { allowPrivate?: boolean }?]>(),
   };
 
   let service: DatabaseGatewayService;
@@ -28,10 +32,32 @@ describe('DatabaseGatewayService', () => {
       credentialStoreMock as unknown as ServerDatabaseCredentialService,
       connectionFactoryMock,
       auditServiceMock as unknown as AuditService,
+      ssrfValidatorMock as unknown as SsrfValidatorService,
     );
     credentialStoreMock.resolve.mockResolvedValue(credential);
     connectionFactoryMock.connect.mockResolvedValue(connectionMock);
     connectionMock.end.mockResolvedValue(undefined);
+    ssrfValidatorMock.assertSafeHost.mockResolvedValue(undefined);
+  });
+
+  it('validates the resolved host with allowPrivate:true before connecting (node DB hosts are routinely RFC1918)', async () => {
+    connectionMock.query.mockResolvedValueOnce([[{ id: 1 }]]);
+
+    await service.execute(tenantId, actorId, 'srv-1', 'db-1', 'SELECT 1');
+
+    expect(ssrfValidatorMock.assertSafeHost).toHaveBeenCalledWith('10.0.0.5', { allowPrivate: true });
+    expect(connectionFactoryMock.connect).toHaveBeenCalled();
+  });
+
+  it('propagates the SSRF rejection and never connects when the host is loopback/link-local/metadata', async () => {
+    ssrfValidatorMock.assertSafeHost.mockRejectedValueOnce(
+      new BadRequestException('resolves to a loopback, link-local, metadata, or otherwise disallowed address'),
+    );
+
+    await expect(
+      service.execute(tenantId, actorId, 'srv-1', 'db-1', 'SELECT 1'),
+    ).rejects.toThrow(BadRequestException);
+    expect(connectionFactoryMock.connect).not.toHaveBeenCalled();
   });
 
   it('rejects invalid SQL before ever resolving a credential or opening a connection', async () => {

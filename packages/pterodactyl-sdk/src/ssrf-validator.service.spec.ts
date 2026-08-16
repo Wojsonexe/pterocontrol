@@ -111,4 +111,57 @@ describe('SsrfValidatorService', () => {
       service.assertSafe('https://panel.example.com'),
     ).rejects.toThrow(BadRequestException);
   });
+
+  describe('assertSafeHost with allowPrivate:true (DatabaseGatewayService)', () => {
+    it.each([
+      ['private 10/8', '10.1.2.3'],
+      ['private 172.16/12', '172.20.1.1'],
+      ['private 192.168/16', '192.168.1.1'],
+      ['IPv6 unique-local', 'fc00::1'],
+      ['IPv4-mapped private address', '::ffff:10.0.0.5'],
+    ])('allows %s (%s) - a node database host is routinely RFC1918', async (_label, address) => {
+      const isV6 = address.includes(':');
+      if (isV6) {
+        resolve4Mock.mockRejectedValueOnce(new Error('no A'));
+        resolve6Mock.mockResolvedValueOnce([address]);
+      } else {
+        resolve4Mock.mockResolvedValueOnce([address]);
+        resolve6Mock.mockRejectedValueOnce(new Error('no AAAA'));
+      }
+
+      await expect(
+        service.assertSafeHost('db.internal', { allowPrivate: true }),
+      ).resolves.toBeUndefined();
+    });
+
+    it.each([
+      ['loopback', '127.0.0.1'],
+      ['link-local incl. metadata', '169.254.169.254'],
+      ['this-network', '0.0.0.0'],
+      ['multicast', '224.0.0.1'],
+    ])('still rejects %s (%s) even with allowPrivate:true - never a legitimate database host', async (_label, address) => {
+      resolve4Mock.mockResolvedValueOnce([address]);
+      resolve6Mock.mockRejectedValueOnce(new Error('no AAAA'));
+
+      await expect(
+        service.assertSafeHost('db.internal', { allowPrivate: true }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('still rejects IPv6 loopback/link-local with allowPrivate:true', async () => {
+      resolve4Mock.mockRejectedValueOnce(new Error('no A'));
+      resolve6Mock.mockResolvedValueOnce(['::1']);
+
+      await expect(
+        service.assertSafeHost('db.internal', { allowPrivate: true }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('defaults to allowPrivate:false when no options are given (same as assertSafe)', async () => {
+      resolve4Mock.mockResolvedValueOnce(['10.0.0.1']);
+      resolve6Mock.mockRejectedValueOnce(new Error('no AAAA'));
+
+      await expect(service.assertSafeHost('db.internal')).rejects.toThrow(BadRequestException);
+    });
+  });
 });
