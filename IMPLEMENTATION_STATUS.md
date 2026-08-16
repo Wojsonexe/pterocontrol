@@ -1,6 +1,6 @@
 # Pterocontrol Control Plane — stan implementacji
 
-Ostatnia aktualizacja: 2026-08-16, branch `feature/control-plane-mvp`, ostatni commit `f5abacd`.
+Ostatnia aktualizacja: 2026-08-16, branch `feature/control-plane-mvp`, ostatni commit `568c68f`.
 
 Dokument-punkt-kontrolny w trybie autonomicznej implementacji. Kolejna sesja: przeczytaj to w całości, potem kontynuuj od sekcji "Następny konkretny krok" — nie projektuj architektury od nowa, jest już ustalona i częściowo zaimplementowana.
 
@@ -85,11 +85,18 @@ Repo to Flutter (`lib/`, `android/`, `ios/`, `test/`, korzeń repo) + backend ob
 
 Świadoma decyzja zakresu: `EventsService` (dedup przez P2002 na `dedupKey`) **nie** został wydzielony do wspólnego pakietu — zduplikowany wprost jako `federation-worker/src/events/record-event.ts` (~15 linii). W odróżnieniu od SSRF/sekretów to nie jest kod krytyczny dla bezpieczeństwa, a wydzielenie wymagałoby przebudowy sposobu wstrzykiwania `PrismaService` między dwoma osobnymi aplikacjami dla niewielkiej korzyści — nie warte tego kosztu na obecnym etapie.
 
+### Alert Engine — AlertRule/Alert + evaluator (pierwsza rzecz czytająca historię ResourceSnapshot)
+- `AlertRule` (Prisma): `metric` (`CPU_PERCENT`/`MEMORY_BYTES`/`DISK_BYTES`/`SERVER_OFFLINE`/`INSTANCE_OFFLINE`), `operator` (`GREATER_THAN`/`LESS_THAN`, null dla reguł offline), `threshold`, `serverId`/`instanceId` (dokładnie jeden zasób na regułę — świadomie bez semantyki "zastosuj do wszystkich serwerów tenanta" w tym MVP), `cooldownSeconds` (domyślnie 300). `Alert` — append-only historia, `resolvedAt: null` = aktywny, nigdy nie usuwany.
+- `AlertsService.evaluate()` — wywoływane co minutę przez `AlertEvaluationScheduler` (`@nestjs/schedule`, tick po `ResourceCollectionScheduler` z tego samego modułu schedulingu, żeby ewaluacja miała szansę zobaczyć snapshot zebrany w tym samym ticku). Czyta wyłącznie to, co już jest w Postgresie (nigdy nic live z Pterodactyla — zgodnie z zasadą "Postgres jest source of truth" z mandatu RabbitMQ). Dedup/cooldown po `(ruleId, resourceId)`: aktywny `Alert` nigdy nie tworzy duplikatu; po `resolve` nowy `Alert` nie powstaje przed upływem `cooldownSeconds` od `resolvedAt`. Jedna reguła rzucająca wyjątkiem (np. serwer usunięty po utworzeniu reguły) jest łapana i logowana per-regułę, nigdy nie przerywa reszty przemiatania — ten sam wzorzec izolacji błędów co w `federation-worker`.
+- `POST/GET /alert-rules`, `DELETE /alert-rules/:id`, `GET /alerts` (filtry `ruleId`/`serverId`/`instanceId`/`active`) — RBAC (`owner`/`admin` dla mutacji rule), tenant-scoped wszędzie, walidacja cross-field (serverId+operator+threshold wymagane dla metryk progowych, instanceId dla `INSTANCE_OFFLINE`) w `AlertsService.createRule()`, z tenant-ownership-check na wskazanym serwerze/instancji.
+- Zweryfikowane REALNIE (tymczasowy Postgres+RabbitMQ w Dockerze, prawdziwy proces, prawdziwy upływ czasu między tickami crona — nie mockowany zegar): `POST /alert-rules` przez HTTP → `Server`+`ResourceSnapshot` (CPU=95.5%) wstawione bezpośrednio przez Prisma (brak dostępu do prawdziwego Pterodactyla, ta sama udokumentowana granica co w FAZA 3+) → po ~60s realnego oczekiwania na tick crona → `Alert` utworzony z poprawnym payloadem (`observedValue:95.5, threshold:90`) → kolejny tick przy niezmienionym stanie → **brak duplikatu** (identyczny `triggeredAt`) → snapshot z CPU=5% wstawiony → kolejny tick → `Alert` **auto-resolved** (`resolvedAt` ustawiony), `GET /alerts?active=true` poprawnie zwraca `[]`. Dodatkowo: brak `threshold`/`operator` → `400`; `DELETE /alert-rules/:id` → `204`.
+- Testy: 20 nowych jednostkowych w `alerts.service.spec.ts` (walidacja `createRule`, wszystkie 5 typów reguł, dedup, cooldown, resolve, izolacja błędów per-regułę, filtry `findAllAlertsForTenant`).
+
 ## Stan testów
 
 ```
-28 suit, 168 testów, wszystkie przechodzą
-  (64 control-plane-api + 47 federation-worker + 42 pterodactyl-sdk + 12 rabbitmq + 3 secrets)
+29 suit, 188 testów, wszystkie przechodzą
+  (84 control-plane-api + 47 federation-worker + 42 pterodactyl-sdk + 12 rabbitmq + 3 secrets)
 npm run typecheck  -> czysty (wszystkie 5 workspace'ów)
 npm run lint        -> czysty (wszystkie 5 workspace'ów)
 ```
@@ -109,12 +116,12 @@ npm run start:dev
 
 ## Świadomie NIEkompletne w tej fazie (uczciwie, nie udawane)
 
-- **`AlertRule`/`Alert` jeszcze nie istnieją** — `ResourceSnapshot` jest teraz zbierany w tle co minutę (FAZA 9b), ale nic jeszcze nie czyta tej historii pod kątem progów/alarmów. To jest następny krok, patrz niżej.
+- **Alert Engine ewaluuje w pętli w `control-plane-api` (scheduled job), nie jako konsument RabbitMQ** — świadoma decyzja opisana wyżej ("prostszy wariant, nie przepisuj architektury bez potrzeby"). `cp.events` exchange jest zadeklarowany w topologii, ale nic jeszcze go nie publikuje/konsumuje — zarezerwowany pod Notifications, jeśli okaże się, że Alert Engine i Notifications faktycznie powinny być rozdzielone przez kolejkę (do zweryfikowania przy budowie Notifications, nie zakładane z góry).
+- **Brak powiadomień o alertach** — `Alert` powstaje i jest widoczny przez `GET /alerts`, ale nic jeszcze nie informuje operatora aktywnie (email/push/webhook). To jest dokładnie zakres Notifications, patrz niżej.
 - **RBAC nie ma jeszcze prawdziwego testu wielo-rolowego na żywo** — bootstrap tworzy tylko rolę `owner`, brak endpointu zapraszania członków z inną rolą. `RolesGuard` w pełni jednostkowo przetestowany, ale nie na żywym requeście z rolą `viewer`.
 - **Brak Prisma `Permission`** (fine-grained RBAC) — świadomie, zgodnie z MVP.
 - **Brak plików/konsoli WebSocket** przez Control Plane.
-- **`cp.events` exchange jest zadeklarowany w topologii, ale jeszcze nic go nie publikuje/konsumuje** — zarezerwowany pod Alert Engine (worker wykrywający przekroczenie progu opublikuje tam, coś w przyszłości — Notifications — będzie konsumować).
-- **Brak testów kolejności wiadomości (message-ordering)** — nie było jeszcze przypadku w kodzie, gdzie kolejność między dwiema wiadomościami faktycznie ma znaczenie (każdy handler operuje na innym jobId niezależnie); do rozważenia przy Alert Engine, jeśli ordering zacznie mieć znaczenie (np. eskalacja alertu).
+- **Brak testów kolejności wiadomości (message-ordering)** w `federation-worker` — nie było jeszcze przypadku w kodzie, gdzie kolejność między dwiema wiadomościami faktycznie ma znaczenie (każdy handler operuje na innym jobId niezależnie).
 - **Nic z Notifications wzwyż nie istnieje**: Backups, Server Configuration, Schedules/Allocations/Databases (Pterodactyl-side), Database Gateway (osobny serwis), Mobile client (tryb Control Plane), Security hardening review, pełne testy integracyjne/E2E, produkcyjny deployment (Prometheus/Grafana/Traefik/TLS).
 - **`infra/docker-compose.yml` wystawia RabbitMQ Management UI na `0.0.0.0:15672`** — akceptowalne dla lokalnego dev, ale mandat RabbitMQ wymaga wprost, żeby nigdy nie było to publicznie dostępne w produkcji; do naprawienia w fazie production/deployment (osobny compose/profil, port bindowany tylko na localhost albo VPN).
 
@@ -125,12 +132,12 @@ npm run start:dev
 
 ## Następny konkretny krok
 
-**Alert Engine** (`AlertRule`/`Alert`, Prisma + evaluator). `ResourceSnapshot` jest teraz realnie zbierany w tle co minutę przez `federation-worker` (FAZA 9b) — Alert Engine jest pierwsza rzecz, która faktycznie czyta tę historię i na jej podstawie coś decyduje. W tej kolejności:
+**Notifications.** `Alert` teraz powstaje i auto-resolve'uje się poprawnie (Alert Engine, wyżej), ale nic jeszcze nie informuje operatora aktywnie — `GET /alerts` trzeba dziś odpytać ręcznie. To jest dokładnie zakres tej fazy. W tej kolejności:
 
-1. Prisma: `AlertRule` (tenantId, targetType instance/server, metric, operator, threshold, cooldownSeconds, enabled) + `Alert` (ruleId, resourceId, tenantId, triggeredAt, resolvedAt?, payload) — append/update-only, nie usuwalne przez API (historia).
-2. Evaluator — 5 reguł z dokumentu MVP Plan: CPU/RAM/disk threshold (czyta najnowszy `ResourceSnapshot`), server offline (brak świeżego `ResourceSnapshot` od X minut), instance offline (`PterodactylInstance.status === UNREACHABLE`). Cooldown + dedup po `(ruleId, resourceId)` — nie tworzyć nowego `Alert`, jeśli poprzedni dla tej pary jest wciąż aktywny (nie `resolvedAt`) lub w oknie cooldownu.
-3. Decyzja architektoniczna do podjęcia na starcie tej fazy: evaluator jako kolejny handler w `federation-worker` (subskrybujący `cp.events` po każdym zapisanym `ResourceSnapshot`/zmianie statusu) **albo** osobny scheduled job (jak `ResourceCollectionScheduler`) w `control-plane-api` czytający bezpośrednio z Postgresa co np. minutę. Ten drugi wariant jest prostszy (nie wymaga publikowania nowych zdarzeń na `cp.events` przy każdym zapisie snapshotu) i lepiej pasuje do "nie przepisuj architektury bez potrzeby" — preferowany, chyba że w trakcie implementacji wyjdzie konkretny powód architektoniczny za wariantem event-driven.
-4. `GET /alerts` (tenant-scoped, filtry: active/resolved, instanceId, serverId) + ewentualnie `POST /alerts/:id/resolve` (ręczne potwierdzenie/wyciszenie).
-5. Testy: unit testy evaluatora (każda z 5 reguł, cooldown, dedup), testy tenant isolation na `GET /alerts`, weryfikacja live na tej samej tymczasowej infrastrukturze (Postgres+RabbitMQ w Dockerze) co FAZA 9b — realnie wywołać próg (np. sztucznie wstawić `ResourceSnapshot` z wysokim CPU) i potwierdzić powstanie `Alert`.
+1. **Wybór kanału do zaimplementowania jako pierwszy: webhook (outbound HTTP POST), nie email.** Powód: SMTP wymaga prawdziwych danych logowania, których nie mam (a "NIE UDAWAJ IMPLEMENTACJI" wyklucza fake providera) — webhook da się w pełni, realnie przetestować bez żadnego sekretu (np. lokalny nasłuchujący serwer HTTP albo publiczny endpoint testowy). Prisma: `NotificationChannel` (tenantId, type na razie tylko `WEBHOOK`, config Json `{url}`, enabled) + `Notification` (append-only log dostaw: channelId, alertId, status pending/delivered/failed, attempt, lastError, sentAt).
+2. **To jest prawdziwy, uzasadniony przypadek na użycie `cp.events`, zarezerwowanego od FAZA 9b.** Wysyłka webhooka to wychodzące wywołanie sieciowe z realnym ryzykiem timeoutu/niedostępności - dokładnie to, co mandat RabbitMQ każe robić asynchronicznie, a nie synchronicznie w pętli evaluatora. `AlertsService.applyEvaluation()` (w momencie tworzenia nowego `Alert`) publikuje event na `cp.events` (routing key np. `alert.triggered`); nowy handler w `federation-worker` (`NotificationDispatchHandler`, wzorowany dokładnie na `ResourcesCollectHandler` co do struktury) konsumuje, wysyła POST na skonfigurowany webhook URL, zapisuje wynik do `Notification`. Ten sam retry/DLQ/idempotency stack co reszta `federation-worker` (transient network error → retry przez `cp.retry`; webhook zwracający 4xx → permanent → DLQ) — zero nowej infrastruktury kolejkowej do zbudowania, tylko nowy routing key + handler + queue binding w `topology.ts` (`packages/rabbitmq`).
+3. `POST/GET/DELETE /notification-channels` (podobny wzorzec CRUD co `alert-rules`), `GET /notifications` (log dostaw, tenant-scoped).
+4. SSRF: webhook URL to również wychodzące wywołanie do adresu podanego przez usera — **musi przejść przez `SsrfValidatorService`** dokładnie tak samo jak `baseUrl` instancji Pterodactyla, żeby nie dało się skonfigurować webhooka wskazującego na metadata/localhost/private IP.
+5. Testy: unit (dispatch handler, klasyfikacja błędów webhooka permanent/transient, SSRF-reject na złym URL), integracyjny live z prawdziwym HTTP serverem nasłuchującym lokalnie jako "webhook receiver" (zamiast `https://example.com` jak dotąd dla Pterodactyla - tu akurat MOŻNA mieć w pełni realny, kontrolowany endpoint odbierający, więc zrobić to porządnie, nie substytutem).
 
-Po Alert Engine: Notifications → Backups → Server Configuration → Schedules/Allocations/Databases/Activity → Database Gateway → Flutter → security review → E2E → production/deployment, zgodnie z listą uzgodnioną z użytkownikiem. Kontynuować autonomicznie, bez zatrzymywania się na potwierdzenie między etapami.
+Po Notifications: Backups → Server Configuration → Schedules/Allocations/Databases/Activity → Database Gateway → Flutter → security review → E2E → production/deployment, zgodnie z listą uzgodnioną z użytkownikiem. Kontynuować autonomicznie, bez zatrzymywania się na potwierdzenie między etapami.
