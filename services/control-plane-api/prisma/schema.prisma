@@ -193,3 +193,61 @@ model Event {
 
   @@index([tenantId, occurredAt])
 }
+
+enum AlertMetric {
+  CPU_PERCENT
+  MEMORY_BYTES
+  DISK_BYTES
+  SERVER_OFFLINE
+  INSTANCE_OFFLINE
+}
+
+enum AlertOperator {
+  GREATER_THAN
+  LESS_THAN
+}
+
+// One rule watches exactly one resource - no wildcard "apply to every
+// server under this tenant" semantics in this MVP (deliberate scope cut,
+// see IMPLEMENTATION_STATUS.md). serverId is required for CPU_PERCENT/
+// MEMORY_BYTES/DISK_BYTES/SERVER_OFFLINE; instanceId is required for
+// INSTANCE_OFFLINE - enforced in AlertsService, not at the schema level
+// (Prisma has no conditional-required-field constraint).
+model AlertRule {
+  id              String         @id @default(uuid())
+  tenantId        String
+  name            String
+  metric          AlertMetric
+  operator        AlertOperator?
+  threshold       Float?
+  serverId        String?
+  instanceId      String?
+  cooldownSeconds Int            @default(300)
+  enabled         Boolean        @default(true)
+  createdAt       DateTime       @default(now())
+
+  alerts Alert[]
+
+  @@index([tenantId])
+}
+
+// resourceId is the serverId or instanceId the rule fired against (same
+// value as AlertRule.serverId/instanceId, denormalized here so a query
+// over Alert never needs to join back to AlertRule to know what actually
+// triggered). resolvedAt null = still active; AlertsService.evaluate()
+// sets it once the underlying condition stops being true - never deleted,
+// this is the alert history, not just current state.
+model Alert {
+  id          String    @id @default(uuid())
+  tenantId    String
+  ruleId      String
+  resourceId  String
+  triggeredAt DateTime  @default(now())
+  resolvedAt  DateTime?
+  payload     Json
+
+  rule AlertRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, triggeredAt])
+  @@index([ruleId, resourceId])
+}
