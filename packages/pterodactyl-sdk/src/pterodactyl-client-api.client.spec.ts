@@ -371,4 +371,305 @@ describe('PterodactylClientApiClient', () => {
       );
     });
   });
+
+  describe('schedules', () => {
+    const rawTask = {
+      attributes: {
+        id: 1,
+        sequence_id: 1,
+        action: 'command',
+        payload: 'say hello',
+        time_offset: 0,
+        is_queued: false,
+      },
+    };
+    const rawSchedule = {
+      attributes: {
+        id: 5,
+        name: 'Nightly restart',
+        cron: { day_of_week: '*', day_of_month: '*', month: '*', hour: '3', minute: '0' },
+        is_active: true,
+        is_processing: false,
+        only_when_online: true,
+        last_run_at: null,
+        next_run_at: '2026-08-17T03:00:00+00:00',
+        created_at: '2026-08-16T12:00:00+00:00',
+        updated_at: '2026-08-16T12:00:00+00:00',
+        relationships: { tasks: { data: [rawTask] } },
+      },
+    };
+
+    it('listSchedules parses schedules with nested tasks', async () => {
+      httpMock.get.mockResolvedValueOnce({ data: [rawSchedule] });
+
+      const result = await client.listSchedules('https://panel.example.com', 'key', 'd3aac109');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe('Nightly restart');
+      expect(result[0].tasks).toEqual([
+        { id: 1, sequenceId: 1, action: 'command', payload: 'say hello', timeOffset: 0, isQueued: false },
+      ]);
+      expect(httpMock.get).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/schedules',
+        'key',
+      );
+    });
+
+    it('createSchedule maps camelCase options to Pterodactyl snake_case fields', async () => {
+      httpMock.post.mockResolvedValueOnce(rawSchedule);
+
+      await client.createSchedule('https://panel.example.com', 'key', 'd3aac109', {
+        name: 'Nightly restart',
+        minute: '0',
+        hour: '3',
+        dayOfMonth: '*',
+        month: '*',
+        dayOfWeek: '*',
+      });
+
+      expect(httpMock.post).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/schedules',
+        'key',
+        {
+          name: 'Nightly restart',
+          minute: '0',
+          hour: '3',
+          day_of_month: '*',
+          month: '*',
+          day_of_week: '*',
+          is_active: true,
+          only_when_online: false,
+        },
+      );
+    });
+
+    it('deleteSchedule sends a DELETE to the schedule endpoint', async () => {
+      httpMock.delete.mockResolvedValueOnce(undefined);
+
+      await client.deleteSchedule('https://panel.example.com', 'key', 'd3aac109', 5);
+
+      expect(httpMock.delete).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/schedules/5',
+        'key',
+      );
+    });
+
+    it('createScheduleTask sends the task payload and parses the response', async () => {
+      httpMock.post.mockResolvedValueOnce(rawTask);
+
+      const result = await client.createScheduleTask(
+        'https://panel.example.com',
+        'key',
+        'd3aac109',
+        5,
+        { action: 'command', payload: 'say hello', timeOffset: 0 },
+      );
+
+      expect(result.action).toBe('command');
+      expect(httpMock.post).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/schedules/5/tasks',
+        'key',
+        { action: 'command', payload: 'say hello', time_offset: 0 },
+      );
+    });
+  });
+
+  describe('allocations', () => {
+    const rawAllocation = {
+      attributes: { id: 1, ip: '10.0.0.1', ip_alias: null, port: 25565, notes: null, is_default: true },
+    };
+
+    it('listAllocations parses the envelope', async () => {
+      httpMock.get.mockResolvedValueOnce({ data: [rawAllocation] });
+
+      const result = await client.listAllocations('https://panel.example.com', 'key', 'd3aac109');
+
+      expect(result).toEqual([
+        { id: 1, ip: '10.0.0.1', ipAlias: null, port: 25565, notes: null, isDefault: true },
+      ]);
+    });
+
+    it('createAllocation sends no body', async () => {
+      httpMock.post.mockResolvedValueOnce(rawAllocation);
+
+      await client.createAllocation('https://panel.example.com', 'key', 'd3aac109');
+
+      expect(httpMock.post).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/network/allocations',
+        'key',
+        undefined,
+      );
+    });
+
+    it('setAllocationNotes sends {notes}', async () => {
+      httpMock.post.mockResolvedValueOnce({
+        attributes: { ...rawAllocation.attributes, notes: 'main lobby' },
+      });
+
+      const result = await client.setAllocationNotes(
+        'https://panel.example.com',
+        'key',
+        'd3aac109',
+        1,
+        'main lobby',
+      );
+
+      expect(result.notes).toBe('main lobby');
+      expect(httpMock.post).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/network/allocations/1',
+        'key',
+        { notes: 'main lobby' },
+      );
+    });
+
+    it('deleteAllocation sends a DELETE', async () => {
+      httpMock.delete.mockResolvedValueOnce(undefined);
+
+      await client.deleteAllocation('https://panel.example.com', 'key', 'd3aac109', 1);
+
+      expect(httpMock.delete).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/network/allocations/1',
+        'key',
+      );
+    });
+  });
+
+  describe('server databases', () => {
+    const rawDatabase = {
+      attributes: {
+        id: 'db-1',
+        host: { address: '10.0.0.5', port: 3306 },
+        name: 's1_survival',
+        username: 's1_survival',
+        connections_from: '%',
+        max_connections: 0,
+        relationships: { password: { attributes: { password: 'secret123' } } },
+      },
+    };
+
+    it('listServerDatabases parses the envelope including the nested password', async () => {
+      httpMock.get.mockResolvedValueOnce({ data: [rawDatabase] });
+
+      const result = await client.listServerDatabases(
+        'https://panel.example.com',
+        'key',
+        'd3aac109',
+      );
+
+      expect(result).toEqual([
+        {
+          id: 'db-1',
+          host: '10.0.0.5',
+          port: 3306,
+          name: 's1_survival',
+          username: 's1_survival',
+          connectionsFrom: '%',
+          maxConnections: 0,
+          password: 'secret123',
+        },
+      ]);
+    });
+
+    it('createServerDatabase defaults remote to "%"', async () => {
+      httpMock.post.mockResolvedValueOnce(rawDatabase);
+
+      await client.createServerDatabase(
+        'https://panel.example.com',
+        'key',
+        'd3aac109',
+        's1_survival',
+      );
+
+      expect(httpMock.post).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/databases',
+        'key',
+        { database: 's1_survival', remote: '%' },
+      );
+    });
+
+    it('rotateServerDatabasePassword posts to the rotate-password endpoint', async () => {
+      httpMock.post.mockResolvedValueOnce(rawDatabase);
+
+      await client.rotateServerDatabasePassword(
+        'https://panel.example.com',
+        'key',
+        'd3aac109',
+        'db-1',
+      );
+
+      expect(httpMock.post).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/databases/db-1/rotate-password',
+        'key',
+        undefined,
+      );
+    });
+
+    it('deleteServerDatabase sends a DELETE', async () => {
+      httpMock.delete.mockResolvedValueOnce(undefined);
+
+      await client.deleteServerDatabase('https://panel.example.com', 'key', 'd3aac109', 'db-1');
+
+      expect(httpMock.delete).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/databases/db-1',
+        'key',
+      );
+    });
+  });
+
+  describe('listActivity', () => {
+    it('parses the activity log envelope', async () => {
+      httpMock.get.mockResolvedValueOnce({
+        data: [
+          {
+            attributes: {
+              id: 'act-1',
+              batch: null,
+              event: 'server:power.start',
+              is_api: true,
+              ip: '203.0.113.5',
+              description: null,
+              timestamp: '2026-08-16T12:00:00+00:00',
+            },
+          },
+        ],
+      });
+
+      const result = await client.listActivity('https://panel.example.com', 'key', 'd3aac109');
+
+      expect(result).toEqual([
+        {
+          id: 'act-1',
+          batch: null,
+          event: 'server:power.start',
+          isApi: true,
+          ip: '203.0.113.5',
+          description: null,
+          timestamp: '2026-08-16T12:00:00+00:00',
+        },
+      ]);
+      expect(httpMock.get).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/activity',
+        'key',
+      );
+    });
+
+    it('rejects a malformed response instead of returning garbage', async () => {
+      httpMock.get.mockResolvedValueOnce({ not: 'a list envelope' });
+
+      await expect(
+        client.listActivity('https://panel.example.com', 'key', 'd3aac109'),
+      ).rejects.toThrow(/envelope/);
+    });
+  });
 });

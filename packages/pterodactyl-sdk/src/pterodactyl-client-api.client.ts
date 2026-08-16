@@ -56,6 +56,87 @@ export interface PterodactylStartupVariableDto {
   rules: string;
 }
 
+// Same provenance caveat as the DTOs above - real, publicly documented
+// Client API v1 shapes for Schedules/Allocations/Databases/Activity, not
+// verified against this repo's Flutter app (none of the four have any
+// REST wiring there at all - confirmed by direct code search, not
+// assumed).
+export interface PterodactylScheduleTaskDto {
+  id: number;
+  sequenceId: number;
+  action: 'command' | 'power' | 'backup';
+  payload: string;
+  timeOffset: number;
+  isQueued: boolean;
+}
+
+export interface PterodactylScheduleDto {
+  id: number;
+  name: string;
+  cron: {
+    dayOfWeek: string;
+    dayOfMonth: string;
+    month: string;
+    hour: string;
+    minute: string;
+  };
+  isActive: boolean;
+  isProcessing: boolean;
+  onlyWhenOnline: boolean;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  tasks: PterodactylScheduleTaskDto[];
+}
+
+export interface CreateScheduleOptions {
+  name: string;
+  minute: string;
+  hour: string;
+  dayOfMonth: string;
+  month: string;
+  dayOfWeek: string;
+  isActive?: boolean;
+  onlyWhenOnline?: boolean;
+}
+
+export interface CreateScheduleTaskOptions {
+  action: 'command' | 'power' | 'backup';
+  payload: string;
+  timeOffset: number;
+}
+
+export interface PterodactylAllocationDto {
+  id: number;
+  ip: string;
+  ipAlias: string | null;
+  port: number;
+  notes: string | null;
+  isDefault: boolean;
+}
+
+export interface PterodactylServerDatabaseDto {
+  id: string;
+  host: string;
+  port: number;
+  name: string;
+  username: string;
+  connectionsFrom: string;
+  maxConnections: number;
+  password: string | null;
+}
+
+export interface PterodactylActivityLogDto {
+  id: string;
+  batch: string | null;
+  event: string;
+  isApi: boolean;
+  ip: string | null;
+  description: string | null;
+  timestamp: string;
+}
+
 interface RawResourceEnvelope {
   attributes: {
     current_state: string;
@@ -207,6 +288,233 @@ function toStartupVariableDto(
     serverValue: attributes.server_value,
     isEditable: attributes.is_editable,
     rules: attributes.rules,
+  };
+}
+
+interface RawTaskAttributes {
+  id: number;
+  sequence_id: number;
+  action: 'command' | 'power' | 'backup';
+  payload: string;
+  time_offset: number;
+  is_queued: boolean;
+}
+
+interface RawScheduleAttributes {
+  id: number;
+  name: string;
+  cron: {
+    day_of_week: string;
+    day_of_month: string;
+    month: string;
+    hour: string;
+    minute: string;
+  };
+  is_active: boolean;
+  is_processing: boolean;
+  only_when_online: boolean;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+  relationships?: {
+    tasks?: { data: { attributes: RawTaskAttributes }[] };
+  };
+}
+
+interface RawScheduleEnvelope {
+  attributes: RawScheduleAttributes;
+}
+
+interface RawScheduleListEnvelope {
+  data: RawScheduleEnvelope[];
+}
+
+interface RawTaskEnvelope {
+  attributes: RawTaskAttributes;
+}
+
+function isRawScheduleEnvelope(value: unknown): value is RawScheduleEnvelope {
+  if (typeof value !== 'object' || value === null || !('attributes' in value)) {
+    return false;
+  }
+  const { attributes } = value;
+  return typeof attributes === 'object' && attributes !== null && 'cron' in attributes;
+}
+
+function isRawScheduleListEnvelope(value: unknown): value is RawScheduleListEnvelope {
+  return (
+    typeof value === 'object' && value !== null && 'data' in value && Array.isArray(value.data)
+  );
+}
+
+function isRawTaskEnvelope(value: unknown): value is RawTaskEnvelope {
+  if (typeof value !== 'object' || value === null || !('attributes' in value)) {
+    return false;
+  }
+  const { attributes } = value;
+  return typeof attributes === 'object' && attributes !== null && 'action' in attributes;
+}
+
+function toTaskDto(raw: RawTaskAttributes): PterodactylScheduleTaskDto {
+  return {
+    id: raw.id,
+    sequenceId: raw.sequence_id,
+    action: raw.action,
+    payload: raw.payload,
+    timeOffset: raw.time_offset,
+    isQueued: raw.is_queued,
+  };
+}
+
+function toScheduleDto(raw: RawScheduleEnvelope): PterodactylScheduleDto {
+  const { attributes } = raw;
+  return {
+    id: attributes.id,
+    name: attributes.name,
+    cron: {
+      dayOfWeek: attributes.cron.day_of_week,
+      dayOfMonth: attributes.cron.day_of_month,
+      month: attributes.cron.month,
+      hour: attributes.cron.hour,
+      minute: attributes.cron.minute,
+    },
+    isActive: attributes.is_active,
+    isProcessing: attributes.is_processing,
+    onlyWhenOnline: attributes.only_when_online,
+    lastRunAt: attributes.last_run_at,
+    nextRunAt: attributes.next_run_at,
+    createdAt: attributes.created_at,
+    updatedAt: attributes.updated_at,
+    tasks: (attributes.relationships?.tasks?.data ?? []).map((t) => toTaskDto(t.attributes)),
+  };
+}
+
+interface RawAllocationAttributes {
+  id: number;
+  ip: string;
+  ip_alias: string | null;
+  port: number;
+  notes: string | null;
+  is_default: boolean;
+}
+
+interface RawAllocationEnvelope {
+  attributes: RawAllocationAttributes;
+}
+
+interface RawAllocationListEnvelope {
+  data: RawAllocationEnvelope[];
+}
+
+function isRawAllocationEnvelope(value: unknown): value is RawAllocationEnvelope {
+  if (typeof value !== 'object' || value === null || !('attributes' in value)) {
+    return false;
+  }
+  const { attributes } = value;
+  return typeof attributes === 'object' && attributes !== null && 'ip' in attributes;
+}
+
+function isRawAllocationListEnvelope(value: unknown): value is RawAllocationListEnvelope {
+  return (
+    typeof value === 'object' && value !== null && 'data' in value && Array.isArray(value.data)
+  );
+}
+
+function toAllocationDto(raw: RawAllocationEnvelope): PterodactylAllocationDto {
+  const { attributes } = raw;
+  return {
+    id: attributes.id,
+    ip: attributes.ip,
+    ipAlias: attributes.ip_alias,
+    port: attributes.port,
+    notes: attributes.notes,
+    isDefault: attributes.is_default,
+  };
+}
+
+interface RawServerDatabaseAttributes {
+  id: string;
+  host: { address: string; port: number };
+  name: string;
+  username: string;
+  connections_from: string;
+  max_connections: number;
+  relationships?: { password?: { attributes: { password: string } } };
+}
+
+interface RawServerDatabaseEnvelope {
+  attributes: RawServerDatabaseAttributes;
+}
+
+interface RawServerDatabaseListEnvelope {
+  data: RawServerDatabaseEnvelope[];
+}
+
+function isRawServerDatabaseEnvelope(value: unknown): value is RawServerDatabaseEnvelope {
+  if (typeof value !== 'object' || value === null || !('attributes' in value)) {
+    return false;
+  }
+  const { attributes } = value;
+  return typeof attributes === 'object' && attributes !== null && 'connections_from' in attributes;
+}
+
+function isRawServerDatabaseListEnvelope(
+  value: unknown,
+): value is RawServerDatabaseListEnvelope {
+  return (
+    typeof value === 'object' && value !== null && 'data' in value && Array.isArray(value.data)
+  );
+}
+
+function toServerDatabaseDto(raw: RawServerDatabaseEnvelope): PterodactylServerDatabaseDto {
+  const { attributes } = raw;
+  return {
+    id: attributes.id,
+    host: attributes.host.address,
+    port: attributes.host.port,
+    name: attributes.name,
+    username: attributes.username,
+    connectionsFrom: attributes.connections_from,
+    maxConnections: attributes.max_connections,
+    password: attributes.relationships?.password?.attributes.password ?? null,
+  };
+}
+
+interface RawActivityLogAttributes {
+  id: string;
+  batch: string | null;
+  event: string;
+  is_api: boolean;
+  ip: string | null;
+  description: string | null;
+  timestamp: string;
+}
+
+interface RawActivityLogEnvelope {
+  attributes: RawActivityLogAttributes;
+}
+
+interface RawActivityLogListEnvelope {
+  data: RawActivityLogEnvelope[];
+}
+
+function isRawActivityLogListEnvelope(value: unknown): value is RawActivityLogListEnvelope {
+  return (
+    typeof value === 'object' && value !== null && 'data' in value && Array.isArray(value.data)
+  );
+}
+
+function toActivityLogDto(raw: RawActivityLogEnvelope): PterodactylActivityLogDto {
+  const { attributes } = raw;
+  return {
+    id: attributes.id,
+    batch: attributes.batch,
+    event: attributes.event,
+    isApi: attributes.is_api,
+    ip: attributes.ip,
+    description: attributes.description,
+    timestamp: attributes.timestamp,
   };
 }
 
@@ -430,5 +738,294 @@ export class PterodactylClientApiClient {
       );
     }
     return toStartupVariableDto(raw);
+  }
+
+  async listSchedules(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+  ): Promise<PterodactylScheduleDto[]> {
+    const raw = await this.http.get(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/schedules`,
+      apiKey,
+    );
+    if (!isRawScheduleListEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {data: [{attributes: {...}}]} envelope from the schedules list endpoint',
+      );
+    }
+    return raw.data.map(toScheduleDto);
+  }
+
+  async createSchedule(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    options: CreateScheduleOptions,
+  ): Promise<PterodactylScheduleDto> {
+    const raw = await this.http.post(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/schedules`,
+      apiKey,
+      {
+        name: options.name,
+        minute: options.minute,
+        hour: options.hour,
+        day_of_month: options.dayOfMonth,
+        month: options.month,
+        day_of_week: options.dayOfWeek,
+        is_active: options.isActive ?? true,
+        only_when_online: options.onlyWhenOnline ?? false,
+      },
+    );
+    if (!isRawScheduleEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {attributes: {...}} envelope from the create-schedule endpoint',
+      );
+    }
+    return toScheduleDto(raw);
+  }
+
+  async getSchedule(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    scheduleId: number,
+  ): Promise<PterodactylScheduleDto> {
+    const raw = await this.http.get(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/schedules/${scheduleId}`,
+      apiKey,
+    );
+    if (!isRawScheduleEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {attributes: {...}} envelope from the schedule details endpoint',
+      );
+    }
+    return toScheduleDto(raw);
+  }
+
+  async deleteSchedule(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    scheduleId: number,
+  ): Promise<void> {
+    await this.http.delete(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/schedules/${scheduleId}`,
+      apiKey,
+    );
+  }
+
+  async createScheduleTask(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    scheduleId: number,
+    options: CreateScheduleTaskOptions,
+  ): Promise<PterodactylScheduleTaskDto> {
+    const raw = await this.http.post(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/schedules/${scheduleId}/tasks`,
+      apiKey,
+      { action: options.action, payload: options.payload, time_offset: options.timeOffset },
+    );
+    if (!isRawTaskEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {attributes: {...}} envelope from the create-task endpoint',
+      );
+    }
+    return toTaskDto(raw.attributes);
+  }
+
+  async deleteScheduleTask(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    scheduleId: number,
+    taskId: number,
+  ): Promise<void> {
+    await this.http.delete(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/schedules/${scheduleId}/tasks/${taskId}`,
+      apiKey,
+    );
+  }
+
+  async listAllocations(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+  ): Promise<PterodactylAllocationDto[]> {
+    const raw = await this.http.get(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/network/allocations`,
+      apiKey,
+    );
+    if (!isRawAllocationListEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {data: [{attributes: {...}}]} envelope from the allocations list endpoint',
+      );
+    }
+    return raw.data.map(toAllocationDto);
+  }
+
+  async createAllocation(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+  ): Promise<PterodactylAllocationDto> {
+    const raw = await this.http.post(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/network/allocations`,
+      apiKey,
+      undefined,
+    );
+    if (!isRawAllocationEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {attributes: {...}} envelope from the create-allocation endpoint',
+      );
+    }
+    return toAllocationDto(raw);
+  }
+
+  async setAllocationNotes(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    allocationId: number,
+    notes: string,
+  ): Promise<PterodactylAllocationDto> {
+    const raw = await this.http.post(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/network/allocations/${allocationId}`,
+      apiKey,
+      { notes },
+    );
+    if (!isRawAllocationEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {attributes: {...}} envelope from the update-allocation endpoint',
+      );
+    }
+    return toAllocationDto(raw);
+  }
+
+  async setPrimaryAllocation(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    allocationId: number,
+  ): Promise<void> {
+    await this.http.post(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/network/allocations/${allocationId}/primary`,
+      apiKey,
+      undefined,
+    );
+  }
+
+  async deleteAllocation(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    allocationId: number,
+  ): Promise<void> {
+    await this.http.delete(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/network/allocations/${allocationId}`,
+      apiKey,
+    );
+  }
+
+  async listServerDatabases(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+  ): Promise<PterodactylServerDatabaseDto[]> {
+    const raw = await this.http.get(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/databases`,
+      apiKey,
+    );
+    if (!isRawServerDatabaseListEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {data: [{attributes: {...}}]} envelope from the databases list endpoint',
+      );
+    }
+    return raw.data.map(toServerDatabaseDto);
+  }
+
+  async createServerDatabase(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    databaseName: string,
+    remote = '%',
+  ): Promise<PterodactylServerDatabaseDto> {
+    const raw = await this.http.post(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/databases`,
+      apiKey,
+      { database: databaseName, remote },
+    );
+    if (!isRawServerDatabaseEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {attributes: {...}} envelope from the create-database endpoint',
+      );
+    }
+    return toServerDatabaseDto(raw);
+  }
+
+  async rotateServerDatabasePassword(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    databaseId: string,
+  ): Promise<PterodactylServerDatabaseDto> {
+    const raw = await this.http.post(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/databases/${databaseId}/rotate-password`,
+      apiKey,
+      undefined,
+    );
+    if (!isRawServerDatabaseEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {attributes: {...}} envelope from the rotate-database-password endpoint',
+      );
+    }
+    return toServerDatabaseDto(raw);
+  }
+
+  async deleteServerDatabase(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    databaseId: string,
+  ): Promise<void> {
+    await this.http.delete(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/databases/${databaseId}`,
+      apiKey,
+    );
+  }
+
+  async listActivity(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+  ): Promise<PterodactylActivityLogDto[]> {
+    const raw = await this.http.get(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/activity`,
+      apiKey,
+    );
+    if (!isRawActivityLogListEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {data: [{attributes: {...}}]} envelope from the activity endpoint',
+      );
+    }
+    return raw.data.map(toActivityLogDto);
   }
 }
