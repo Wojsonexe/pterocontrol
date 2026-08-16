@@ -11,6 +11,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { RabbitmqModule } from './rabbitmq/rabbitmq.module';
 import { SchedulingModule } from './scheduling/scheduling.module';
 import { SecretsModule } from './secrets/secrets.module';
+import { ServerConfigModule } from './server-config/server-config.module';
 import { ServersModule } from './servers/servers.module';
 import { TenantsModule } from './tenants/tenants.module';
 
@@ -29,6 +30,7 @@ import { TenantsModule } from './tenants/tenants.module';
     EventsModule,
     AlertsModule,
     BackupsModule,
+    ServerConfigModule,
   ],
 })
 export class AppModule {}

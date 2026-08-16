@@ -42,6 +42,20 @@ export interface CreateBackupOptions {
   isLocked?: boolean;
 }
 
+// Same provenance caveat as PterodactylBackupDto above - real, publicly
+// documented Client API v1 shape, not verified against this repo's own
+// Flutter app (its Startup/Environment tab is likewise a "coming soon"
+// placeholder - see server_detail_screen.dart).
+export interface PterodactylStartupVariableDto {
+  name: string;
+  description: string;
+  envVariable: string;
+  defaultValue: string;
+  serverValue: string;
+  isEditable: boolean;
+  rules: string;
+}
+
 interface RawResourceEnvelope {
   attributes: {
     current_state: string;
@@ -136,6 +150,63 @@ function toBackupDto(raw: RawBackupEnvelope): PterodactylBackupDto {
     isLocked: attributes.is_locked,
     createdAt: attributes.created_at,
     completedAt: attributes.completed_at,
+  };
+}
+
+interface RawStartupVariableAttributes {
+  name: string;
+  description: string;
+  env_variable: string;
+  default_value: string;
+  server_value: string;
+  is_editable: boolean;
+  rules: string;
+}
+
+interface RawStartupVariableEnvelope {
+  attributes: RawStartupVariableAttributes;
+}
+
+interface RawStartupVariableListEnvelope {
+  data: RawStartupVariableEnvelope[];
+}
+
+function isRawStartupVariableEnvelope(value: unknown): value is RawStartupVariableEnvelope {
+  if (typeof value !== 'object' || value === null || !('attributes' in value)) {
+    return false;
+  }
+  const { attributes } = value;
+  return (
+    typeof attributes === 'object' &&
+    attributes !== null &&
+    'env_variable' in attributes &&
+    'is_editable' in attributes
+  );
+}
+
+function isRawStartupVariableListEnvelope(
+  value: unknown,
+): value is RawStartupVariableListEnvelope {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'data' in value &&
+    Array.isArray(value.data)
+  );
+}
+
+function toStartupVariableDto(
+  raw: RawStartupVariableEnvelope,
+): PterodactylStartupVariableDto {
+  const { attributes } = raw;
+  return {
+    name: attributes.name,
+    description: attributes.description,
+    envVariable: attributes.env_variable,
+    defaultValue: attributes.default_value,
+    serverValue: attributes.server_value,
+    isEditable: attributes.is_editable,
+    rules: attributes.rules,
   };
 }
 
@@ -320,5 +391,44 @@ export class PterodactylClientApiClient {
       );
     }
     return toBackupDto(raw);
+  }
+
+  async getStartupVariables(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+  ): Promise<PterodactylStartupVariableDto[]> {
+    const raw = await this.http.get(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/startup`,
+      apiKey,
+    );
+    if (!isRawStartupVariableListEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {data: [{attributes: {...}}]} envelope from the startup endpoint',
+      );
+    }
+    return raw.data.map(toStartupVariableDto);
+  }
+
+  async updateStartupVariable(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    key: string,
+    value: string,
+  ): Promise<PterodactylStartupVariableDto> {
+    const raw = await this.http.put(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/startup/variable`,
+      apiKey,
+      { key, value },
+    );
+    if (!isRawStartupVariableEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {attributes: {...}} envelope from the update-startup-variable endpoint',
+      );
+    }
+    return toStartupVariableDto(raw);
   }
 }

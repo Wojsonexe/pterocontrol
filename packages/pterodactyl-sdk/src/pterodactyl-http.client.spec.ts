@@ -168,4 +168,39 @@ describe('PterodactylHttpClient', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
   });
+
+  describe('put', () => {
+    it('sends a JSON body with the correct Content-Type', async () => {
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      global.fetch = fetchMock;
+
+      await client.put(
+        'https://panel.example.com',
+        '/api/client/servers/abc/startup/variable',
+        'key',
+        { key: 'SERVER_JARFILE', value: 'paper.jar' },
+      );
+
+      const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(options.method).toBe('PUT');
+      expect(options.body).toBe(
+        JSON.stringify({ key: 'SERVER_JARFILE', value: 'paper.jar' }),
+      );
+      expect((options.headers as Record<string, string>)['Content-Type']).toBe(
+        'application/json',
+      );
+    });
+
+    it('validates SSRF before sending a PUT too', async () => {
+      ssrfMock.assertSafe.mockRejectedValueOnce(new Error('blocked'));
+      global.fetch = jest.fn();
+
+      await expect(
+        client.put('https://panel.example.com', '/x', 'key', {}),
+      ).rejects.toThrow('blocked');
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
 });

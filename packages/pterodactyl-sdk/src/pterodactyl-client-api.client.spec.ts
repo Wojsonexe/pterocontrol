@@ -2,7 +2,7 @@ import { PterodactylClientApiClient } from './pterodactyl-client-api.client';
 import { PterodactylHttpClient } from './pterodactyl-http.client';
 
 describe('PterodactylClientApiClient', () => {
-  const httpMock = { get: jest.fn(), post: jest.fn(), delete: jest.fn() };
+  const httpMock = { get: jest.fn(), post: jest.fn(), delete: jest.fn(), put: jest.fn() };
   let client: PterodactylClientApiClient;
 
   const rawBackup = {
@@ -34,6 +34,7 @@ describe('PterodactylClientApiClient', () => {
     httpMock.get.mockReset();
     httpMock.post.mockReset();
     httpMock.delete.mockReset();
+    httpMock.put.mockReset();
     client = new PterodactylClientApiClient(
       httpMock as unknown as PterodactylHttpClient,
     );
@@ -286,6 +287,87 @@ describe('PterodactylClientApiClient', () => {
         '/api/client/servers/d3aac109/backups/backup-uuid-1/lock',
         'key',
         undefined,
+      );
+    });
+  });
+
+  describe('getStartupVariables', () => {
+    const rawVariable = {
+      attributes: {
+        name: 'Server Jar File',
+        description: 'The jar file to run',
+        env_variable: 'SERVER_JARFILE',
+        default_value: 'server.jar',
+        server_value: 'paper.jar',
+        is_editable: true,
+        rules: 'required|string|max:20',
+      },
+    };
+
+    it('parses the real Pterodactyl startup envelope into typed DTOs', async () => {
+      httpMock.get.mockResolvedValueOnce({ data: [rawVariable] });
+
+      const result = await client.getStartupVariables(
+        'https://panel.example.com',
+        'key',
+        'd3aac109',
+      );
+
+      expect(result).toEqual([
+        {
+          name: 'Server Jar File',
+          description: 'The jar file to run',
+          envVariable: 'SERVER_JARFILE',
+          defaultValue: 'server.jar',
+          serverValue: 'paper.jar',
+          isEditable: true,
+          rules: 'required|string|max:20',
+        },
+      ]);
+      expect(httpMock.get).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/startup',
+        'key',
+      );
+    });
+
+    it('rejects a malformed response instead of returning garbage', async () => {
+      httpMock.get.mockResolvedValueOnce({ not: 'a list envelope' });
+
+      await expect(
+        client.getStartupVariables('https://panel.example.com', 'key', 'd3aac109'),
+      ).rejects.toThrow(/envelope/);
+    });
+  });
+
+  describe('updateStartupVariable', () => {
+    it('sends a PUT with {key, value} and returns the updated variable', async () => {
+      httpMock.put.mockResolvedValueOnce({
+        attributes: {
+          name: 'Server Jar File',
+          description: 'The jar file to run',
+          env_variable: 'SERVER_JARFILE',
+          default_value: 'server.jar',
+          server_value: 'paper-new.jar',
+          is_editable: true,
+          rules: 'required|string|max:20',
+        },
+      });
+
+      const result = await client.updateStartupVariable(
+        'https://panel.example.com',
+        'key',
+        'd3aac109',
+        'SERVER_JARFILE',
+        'paper-new.jar',
+      );
+
+      expect(result.serverValue).toBe('paper-new.jar');
+      expect(httpMock.put).toHaveBeenCalledWith(
+        'https://panel.example.com',
+        '/api/client/servers/d3aac109/startup/variable',
+        'key',
+        { key: 'SERVER_JARFILE', value: 'paper-new.jar' },
       );
     });
   });

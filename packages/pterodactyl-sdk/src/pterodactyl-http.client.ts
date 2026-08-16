@@ -58,11 +58,21 @@ export class PterodactylHttpClient {
     return this.request(baseUrl, path, apiKey, 'DELETE', undefined, timeoutMs);
   }
 
+  put(
+    baseUrl: string,
+    path: string,
+    apiKey: string,
+    body: unknown,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+  ): Promise<unknown> {
+    return this.request(baseUrl, path, apiKey, 'PUT', body, timeoutMs);
+  }
+
   private async request(
     baseUrl: string,
     path: string,
     apiKey: string,
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'DELETE' | 'PUT',
     body: unknown,
     timeoutMs: number,
   ): Promise<unknown> {
