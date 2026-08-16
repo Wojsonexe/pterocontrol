@@ -1,6 +1,7 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AlertMetric, AlertOperator, InstanceStatus } from '@prisma/client';
 import { InstancesService } from '../instances/instances.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ServersService } from '../servers/servers.service';
 import { AlertsService } from './alerts.service';
@@ -32,16 +33,19 @@ describe('AlertsService', () => {
   };
   const instancesServiceMock = { findOneForTenant: jest.fn() };
   const serversServiceMock = { findOneForTenant: jest.fn() };
+  const notificationsServiceMock = { notifyAlertTriggered: jest.fn() };
 
   let service: AlertsService;
   const tenantId = 't-1';
 
   beforeEach(() => {
     jest.clearAllMocks();
+    notificationsServiceMock.notifyAlertTriggered.mockResolvedValue(undefined);
     service = new AlertsService(
       prismaMock as unknown as PrismaService,
       instancesServiceMock as unknown as InstancesService,
       serversServiceMock as unknown as ServersService,
+      notificationsServiceMock as unknown as NotificationsService,
     );
   });
 
@@ -148,7 +152,7 @@ describe('AlertsService', () => {
         observedAt: new Date(),
       });
       prismaMock.alert.findFirst.mockResolvedValueOnce(null); // no active alert
-      prismaMock.alert.create.mockResolvedValueOnce({});
+      prismaMock.alert.create.mockResolvedValueOnce({ id: 'alert-1' });
 
       await service.evaluate();
 
@@ -156,6 +160,10 @@ describe('AlertsService', () => {
       expect(createArgs.data.tenantId).toBe(tenantId);
       expect(createArgs.data.ruleId).toBe('rule-1');
       expect(createArgs.data.resourceId).toBe('srv-1');
+      expect(notificationsServiceMock.notifyAlertTriggered).toHaveBeenCalledWith(
+        tenantId,
+        'alert-1',
+      );
     });
 
     it('does not create a duplicate Alert when one is already active for this (rule, resource)', async () => {
@@ -169,9 +177,10 @@ describe('AlertsService', () => {
       await service.evaluate();
 
       expect(prismaMock.alert.create).not.toHaveBeenCalled();
+      expect(notificationsServiceMock.notifyAlertTriggered).not.toHaveBeenCalled();
     });
 
-    it('resolves the active Alert once the value drops back under the threshold', async () => {
+    it('resolves the active Alert once the value drops back under the threshold, without notifying', async () => {
       prismaMock.alertRule.findMany.mockResolvedValueOnce([rule]);
       prismaMock.resourceSnapshot.findFirst.mockResolvedValueOnce({
         cpuAbsolutePercent: 10,
@@ -186,6 +195,7 @@ describe('AlertsService', () => {
         where: { id: 'alert-1' },
         data: { resolvedAt: expect.any(Date) as Date },
       });
+      expect(notificationsServiceMock.notifyAlertTriggered).not.toHaveBeenCalled();
     });
 
     it('respects the cooldown - does not re-alert immediately after a resolved Alert', async () => {

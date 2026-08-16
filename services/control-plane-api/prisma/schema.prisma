@@ -247,7 +247,61 @@ model Alert {
   payload     Json
 
   rule AlertRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  notifications Notification[]
 
   @@index([tenantId, triggeredAt])
   @@index([ruleId, resourceId])
+}
+
+enum NotificationChannelType {
+  WEBHOOK
+}
+
+enum NotificationStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
+
+// config shape depends on type - {url: string} for WEBHOOK, the only
+// type this MVP implements (enum left open for e.g. SLACK/EMAIL later).
+// url is SSRF-validated both at channel-creation time (immediate
+// feedback) and again by federation-worker immediately before every
+// send (same DNS-rebinding defense as PterodactylInstance.baseUrl -
+// see SsrfValidatorService's own doc comment).
+model NotificationChannel {
+  id        String                  @id @default(uuid())
+  tenantId  String
+  type      NotificationChannelType
+  config    Json
+  enabled   Boolean                 @default(true)
+  createdAt DateTime                @default(now())
+
+  notifications Notification[]
+
+  @@index([tenantId])
+}
+
+// One row per (Alert, NotificationChannel) delivery attempt sequence -
+// created PENDING by AlertsService the moment a new Alert triggers (for
+// every enabled channel on that tenant), then federation-worker's
+// NotificationDispatchHandler updates it to DELIVERED/FAILED after
+// actually sending. attempt/lastError mirror the envelope's own retry
+// count for operator visibility without needing to inspect RabbitMQ.
+model Notification {
+  id        String             @id @default(uuid())
+  tenantId  String
+  channelId String
+  alertId   String
+  status    NotificationStatus @default(PENDING)
+  attempt   Int                @default(0)
+  lastError String?
+  sentAt    DateTime?
+  createdAt DateTime           @default(now())
+
+  channel NotificationChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  alert   Alert               @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([channelId])
 }

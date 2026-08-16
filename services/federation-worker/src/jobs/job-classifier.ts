@@ -7,6 +7,7 @@ import {
   PterodactylUpstreamError,
 } from '@pterocontrol/pterodactyl-sdk';
 import { PermanentJobError } from '../errors/permanent-job-error';
+import { WebhookNetworkError, WebhookResponseError } from '../notifications/webhook-http.client';
 
 export type ErrorClassification = 'permanent' | 'transient';
 
@@ -42,6 +43,14 @@ export function classifyError(error: unknown): ErrorClassification {
     return 'transient';
   }
   if (error instanceof PterodactylUpstreamError) {
+    return error.statusCode !== undefined && error.statusCode >= 500
+      ? 'transient'
+      : 'permanent';
+  }
+  if (error instanceof WebhookNetworkError) {
+    return 'transient';
+  }
+  if (error instanceof WebhookResponseError) {
     return error.statusCode !== undefined && error.statusCode >= 500
       ? 'transient'
       : 'permanent';

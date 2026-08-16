@@ -7,35 +7,32 @@ import {
   RabbitMqPublisherService,
   ROUTING_KEYS,
 } from '@pterocontrol/rabbitmq';
-import { InstanceSyncHandler } from '../handlers/instance-sync.handler';
-import { ResourcesCollectHandler } from '../handlers/resources-collect.handler';
-import { ServerSyncHandler } from '../handlers/server-sync.handler';
 import { IdempotencyService } from '../idempotency/idempotency.service';
+import { NotificationDispatchHandler } from '../notifications/notification-dispatch.handler';
 import { classifyError } from '../jobs/job-classifier';
 
 /**
- * Thin wiring around @pterocontrol/rabbitmq's generic QueueConsumer (the
- * consume -> dispatch -> ack/retry/DLQ loop itself lives there now,
- * shared with NotificationConsumerService - see that class and
- * QueueConsumer's own doc comment for why) - this class only supplies
- * federation.worker-specific routing and the three job handlers.
+ * Second QueueConsumer instance in this same process, consuming
+ * notifications.worker (alert.triggered) instead of federation.worker -
+ * a separate consumer, not a second worker process, since RabbitMQ is
+ * what gives real value here (see IMPLEMENTATION_STATUS.md), not a
+ * process boundary. Shares the exact same generic loop as
+ * FederationConsumerService via @pterocontrol/rabbitmq's QueueConsumer.
  */
 @Injectable()
-export class FederationConsumerService implements OnModuleInit {
+export class NotificationConsumerService implements OnModuleInit {
   private readonly consumer: QueueConsumer;
 
   constructor(
     connection: RabbitMqConnectionService,
     publisher: RabbitMqPublisherService,
     private readonly idempotency: IdempotencyService,
-    private readonly instanceSyncHandler: InstanceSyncHandler,
-    private readonly serverSyncHandler: ServerSyncHandler,
-    private readonly resourcesCollectHandler: ResourcesCollectHandler,
+    private readonly notificationDispatchHandler: NotificationDispatchHandler,
   ) {
     this.consumer = new QueueConsumer(
       connection,
       publisher,
-      QUEUES.FEDERATION_WORKER,
+      QUEUES.NOTIFICATIONS_WORKER,
       {
         dispatch: (routingKey, envelope) => this.dispatch(routingKey, envelope),
         classifyError,
@@ -43,7 +40,7 @@ export class FederationConsumerService implements OnModuleInit {
         markProcessed: (jobId, jobType, tenantId) =>
           this.idempotency.markProcessed(jobId, jobType, tenantId),
       },
-      FederationConsumerService.name,
+      NotificationConsumerService.name,
     );
   }
 
@@ -56,12 +53,8 @@ export class FederationConsumerService implements OnModuleInit {
     envelope: MessageEnvelope,
   ): Promise<void> {
     switch (routingKey) {
-      case ROUTING_KEYS.INSTANCE_SYNC:
-        return this.instanceSyncHandler.handle(envelope);
-      case ROUTING_KEYS.SERVER_SYNC:
-        return this.serverSyncHandler.handle(envelope);
-      case ROUTING_KEYS.RESOURCES_COLLECT:
-        return this.resourcesCollectHandler.handle(envelope);
+      case ROUTING_KEYS.ALERT_TRIGGERED:
+        return this.notificationDispatchHandler.handle(envelope);
       default:
         throw new Error(`No handler registered for routing key "${routingKey}"`);
     }

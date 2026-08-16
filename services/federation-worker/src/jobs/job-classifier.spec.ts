@@ -7,6 +7,7 @@ import {
   PterodactylUpstreamError,
 } from '@pterocontrol/pterodactyl-sdk';
 import { PermanentJobError } from '../errors/permanent-job-error';
+import { WebhookNetworkError, WebhookResponseError } from '../notifications/webhook-http.client';
 import { classifyError } from './job-classifier';
 
 describe('classifyError', () => {
@@ -23,6 +24,11 @@ describe('classifyError', () => {
       new PterodactylUpstreamError('redirect'),
     ],
     ['a NestJS HttpException (e.g. rejected SSRF check)', new BadRequestException('unsafe URL')],
+    ['WebhookResponseError with a 4xx status', new WebhookResponseError('not found', 404)],
+    [
+      'WebhookResponseError with no status (redirect case)',
+      new WebhookResponseError('redirect'),
+    ],
   ])('classifies %s as permanent - never retry', (_label, error) => {
     expect(classifyError(error)).toBe('permanent');
   });
@@ -33,6 +39,8 @@ describe('classifyError', () => {
     ['PterodactylUpstreamError with a 502 status', new PterodactylUpstreamError('bad gateway', 502)],
     ['PterodactylUpstreamError with a 503 status', new PterodactylUpstreamError('unavailable', 503)],
     ['PterodactylUpstreamError with a 504 status', new PterodactylUpstreamError('timeout', 504)],
+    ['WebhookNetworkError (timeout/connection refused)', new WebhookNetworkError('ECONNREFUSED')],
+    ['WebhookResponseError with a 503 status', new WebhookResponseError('unavailable', 503)],
     ['an unrecognized error (safe default)', new Error('unexpected bug')],
   ])('classifies %s as transient - always retry (bounded by MAX_RETRY_ATTEMPTS)', (_label, error) => {
     expect(classifyError(error)).toBe('transient');

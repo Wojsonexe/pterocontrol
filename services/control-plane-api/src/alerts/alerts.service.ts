@@ -8,6 +8,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { InstancesService } from '../instances/instances.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ServersService } from '../servers/servers.service';
 import { CreateAlertRuleDto } from './dto/create-alert-rule.dto';
@@ -51,6 +52,7 @@ export class AlertsService {
     private readonly prisma: PrismaService,
     private readonly instancesService: InstancesService,
     private readonly serversService: ServersService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async createRule(tenantId: string, dto: CreateAlertRuleDto): Promise<AlertRule> {
@@ -261,7 +263,7 @@ export class AlertsService {
       }
     }
 
-    await this.prisma.alert.create({
+    const alert = await this.prisma.alert.create({
       data: {
         tenantId: rule.tenantId,
         ruleId: rule.id,
@@ -269,5 +271,10 @@ export class AlertsService {
         payload: payload as Prisma.InputJsonValue,
       },
     });
+
+    // Fire-and-log, not fire-and-forget-silently: a channel failing to
+    // queue must never undo the Alert this method just committed (see
+    // NotificationsService.notifyAlertTriggered's own doc comment).
+    await this.notificationsService.notifyAlertTriggered(rule.tenantId, alert.id);
   }
 }
