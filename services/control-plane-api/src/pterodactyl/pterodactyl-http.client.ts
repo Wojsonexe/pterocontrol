@@ -29,11 +29,27 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 export class PterodactylHttpClient {
   constructor(private readonly ssrfValidator: SsrfValidatorService) {}
 
-  async get(
+  get(baseUrl: string, path: string, apiKey: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<unknown> {
+    return this.request(baseUrl, path, apiKey, 'GET', undefined, timeoutMs);
+  }
+
+  post(
     baseUrl: string,
     path: string,
     apiKey: string,
+    body: unknown,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+  ): Promise<unknown> {
+    return this.request(baseUrl, path, apiKey, 'POST', body, timeoutMs);
+  }
+
+  private async request(
+    baseUrl: string,
+    path: string,
+    apiKey: string,
+    method: 'GET' | 'POST',
+    body: unknown,
+    timeoutMs: number,
   ): Promise<unknown> {
     const url = new URL(path, baseUrl).toString();
     await this.ssrfValidator.assertSafe(url);
@@ -44,11 +60,13 @@ export class PterodactylHttpClient {
     let response: Response;
     try {
       response = await fetch(url, {
-        method: 'GET',
+        method,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           Accept: 'application/json',
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
         redirect: 'manual',
         signal: controller.signal,
       });
@@ -63,8 +81,14 @@ export class PterodactylHttpClient {
     this.assertNotRedirect(response);
     this.assertOk(response);
 
+    // Some endpoints (e.g. the power-action endpoint) legitimately
+    // return 204 No Content - only attempt to parse a body if there is one.
+    const text = await response.text();
+    if (text.length === 0) {
+      return undefined;
+    }
     try {
-      return await response.json();
+      return JSON.parse(text) as unknown;
     } catch (error) {
       throw new PterodactylUnexpectedResponseError(
         `Could not parse response from ${baseUrl} as JSON: ${String(error)}`,

@@ -1,7 +1,9 @@
-import { BadGatewayException, NotFoundException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, NotFoundException } from '@nestjs/common';
+import { AuditService } from '../audit/audit.service';
 import { InstancesService } from '../instances/instances.service';
 import { PterodactylApplicationApiClient } from '../pterodactyl/pterodactyl-application-api.client';
-import { PterodactylNotFoundError } from '../pterodactyl/pterodactyl-http.client';
+import { PterodactylClientApiClient } from '../pterodactyl/pterodactyl-client-api.client';
+import { PterodactylAuthError, PterodactylNotFoundError } from '../pterodactyl/pterodactyl-http.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SecretsService } from '../secrets/secrets.service';
 import { ServersService } from './servers.service';
@@ -9,6 +11,16 @@ import { ServersService } from './servers.service';
 interface ServerUpsertArgs {
   where: { instanceId_pterodactylUuid: { instanceId: string; pterodactylUuid: string } };
   create: { tenantId: string; pterodactylUuid: string; name: string };
+}
+
+interface AuditRecordArgs {
+  tenantId: string;
+  actorId?: string;
+  action: string;
+  targetType: string;
+  targetId?: string;
+  result: string;
+  metadata?: unknown;
 }
 
 describe('ServersService', () => {
@@ -23,6 +35,8 @@ describe('ServersService', () => {
   const instancesServiceMock = { findOneForTenant: jest.fn() };
   const secretsMock = { decrypt: jest.fn() };
   const applicationApiMock = { listServers: jest.fn() };
+  const clientApiMock = { getResourceUsage: jest.fn(), sendPowerAction: jest.fn() };
+  const auditServiceMock = { record: jest.fn<Promise<void>, [AuditRecordArgs]>() };
 
   let service: ServersService;
   const tenantId = 't-1';
@@ -35,6 +49,8 @@ describe('ServersService', () => {
       instancesServiceMock as unknown as InstancesService,
       secretsMock as unknown as SecretsService,
       applicationApiMock as unknown as PterodactylApplicationApiClient,
+      clientApiMock as unknown as PterodactylClientApiClient,
+      auditServiceMock as unknown as AuditService,
     );
   });
 
@@ -54,8 +70,13 @@ describe('ServersService', () => {
       instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
       prismaMock.instanceCredential.findUnique.mockResolvedValueOnce(null);
 
+      // BadRequestException, not NotFoundException: this is a
+      // configuration problem ("you never gave this instance an
+      // Application API key"), the same exception type getResources()/
+      // sendPowerAction() use for their own missing-credential case
+      // below - one shared getCredential() helper, one consistent status.
       await expect(service.syncInstance(tenantId, 'inst-1')).rejects.toThrow(
-        NotFoundException,
+        BadRequestException,
       );
     });
 
@@ -138,6 +159,117 @@ describe('ServersService', () => {
       await expect(
         service.findOneForTenant('other-tenant', 'srv-1'),
       ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('getResources', () => {
+    const server = { id: 'srv-1', tenantId, instanceId: 'inst-1', identifier: 'd3aac109' };
+
+    it('rejects with a clear error when no Client API key is configured', async () => {
+      prismaMock.server.findFirst.mockResolvedValueOnce(server);
+      instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
+      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce(null);
+
+      await expect(service.getResources(tenantId, 'srv-1')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(clientApiMock.getResourceUsage).not.toHaveBeenCalled();
+    });
+
+    it('fetches resources using the server identifier, not the internal global id', async () => {
+      prismaMock.server.findFirst.mockResolvedValueOnce(server);
+      instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
+      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
+        ciphertext: Buffer.from('enc'),
+      });
+      secretsMock.decrypt.mockReturnValueOnce('client-key');
+      clientApiMock.getResourceUsage.mockResolvedValueOnce({ currentState: 'running' });
+
+      await service.getResources(tenantId, 'srv-1');
+
+      expect(clientApiMock.getResourceUsage).toHaveBeenCalledWith(
+        instance.baseUrl,
+        'client-key',
+        'd3aac109',
+      );
+    });
+
+    it('maps a Pterodactyl-side failure to BadGatewayException, not a raw 500', async () => {
+      prismaMock.server.findFirst.mockResolvedValueOnce(server);
+      instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
+      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
+        ciphertext: Buffer.from('enc'),
+      });
+      secretsMock.decrypt.mockReturnValueOnce('client-key');
+      clientApiMock.getResourceUsage.mockRejectedValueOnce(
+        new PterodactylAuthError('bad key'),
+      );
+
+      await expect(service.getResources(tenantId, 'srv-1')).rejects.toThrow(
+        BadGatewayException,
+      );
+    });
+  });
+
+  describe('sendPowerAction', () => {
+    const server = { id: 'srv-1', tenantId, instanceId: 'inst-1', identifier: 'd3aac109' };
+
+    it('records a success audit entry when the power action succeeds', async () => {
+      prismaMock.server.findFirst.mockResolvedValueOnce(server);
+      instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
+      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
+        ciphertext: Buffer.from('enc'),
+      });
+      secretsMock.decrypt.mockReturnValueOnce('client-key');
+      clientApiMock.sendPowerAction.mockResolvedValueOnce(undefined);
+
+      await service.sendPowerAction(tenantId, 'actor-1', 'srv-1', 'restart');
+
+      expect(clientApiMock.sendPowerAction).toHaveBeenCalledWith(
+        instance.baseUrl,
+        'client-key',
+        'd3aac109',
+        'restart',
+      );
+      const auditArgs = auditServiceMock.record.mock.calls[0][0];
+      expect(auditArgs).toEqual({
+        tenantId,
+        actorId: 'actor-1',
+        action: 'power.restart',
+        targetType: 'server',
+        targetId: 'srv-1',
+        result: 'success',
+      });
+    });
+
+    it('records a failure audit entry AND still throws when the power action fails', async () => {
+      prismaMock.server.findFirst.mockResolvedValueOnce(server);
+      instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
+      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
+        ciphertext: Buffer.from('enc'),
+      });
+      secretsMock.decrypt.mockReturnValueOnce('client-key');
+      clientApiMock.sendPowerAction.mockRejectedValueOnce(
+        new PterodactylAuthError('bad key'),
+      );
+
+      await expect(
+        service.sendPowerAction(tenantId, 'actor-1', 'srv-1', 'kill'),
+      ).rejects.toThrow(BadGatewayException);
+
+      const auditArgs = auditServiceMock.record.mock.calls[0][0];
+      expect(auditArgs.result).toBe('error');
+      expect(auditArgs.action).toBe('power.kill');
+    });
+
+    it('never calls the Pterodactyl API at all for a server in another tenant (404 first)', async () => {
+      prismaMock.server.findFirst.mockResolvedValueOnce(null);
+
+      await expect(
+        service.sendPowerAction('other-tenant', 'actor-1', 'srv-1', 'start'),
+      ).rejects.toThrow(NotFoundException);
+      expect(clientApiMock.sendPowerAction).not.toHaveBeenCalled();
+      expect(auditServiceMock.record).not.toHaveBeenCalled();
     });
   });
 });

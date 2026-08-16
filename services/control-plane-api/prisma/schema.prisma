@@ -118,3 +118,20 @@ model Server {
   @@index([tenantId])
   @@index([instanceId])
 }
+
+// Append-only. Every privileged action (power actions first; more follow
+// as they're built) writes exactly one row here, success or failure -
+// never edited or deleted through the API.
+model AuditLog {
+  id         String   @id @default(uuid())
+  tenantId   String
+  actorId    String?
+  action     String
+  targetType String
+  targetId   String?
+  result     String // success | denied | error
+  metadata   Json?
+  at         DateTime @default(now())
+
+  @@index([tenantId, at])
+}
