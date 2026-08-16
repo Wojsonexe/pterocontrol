@@ -71,3 +71,10 @@ npm-debug.log*
 # .env.* wyżej w tym pliku łapie też .env.example — to jedyny świadomy
 # wyjątek: .env.example to bezpieczny, commitowany szablon bez sekretów.
 !**/.env.example
+
+# **/secrets.* wyżej w tym pliku (myślane pod pliki typu secrets.json)
+# łapie też legalne pliki źródłowe zaczynające się od "secrets." —
+# np. secrets.module.ts / secrets.service.ts. Wyjątek dla całego
+# katalogu modułu secrets w control-plane-api, żeby to się nie
+# powtórzyło przy kolejnych plikach w tym katalogu.
+!services/control-plane-api/src/secrets/**
