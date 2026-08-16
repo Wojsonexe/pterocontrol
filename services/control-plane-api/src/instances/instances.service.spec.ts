@@ -1,11 +1,11 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { CredentialKind, InstanceStatus } from '@prisma/client';
+import { PterodactylApplicationApiClient } from '../pterodactyl/pterodactyl-application-api.client';
+import { PterodactylAuthError } from '../pterodactyl/pterodactyl-http.client';
+import { SsrfValidatorService } from '../pterodactyl/ssrf-validator.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SecretsService } from '../secrets/secrets.service';
 import { InstancesService } from './instances.service';
-import { PterodactylApplicationApiClient } from './pterodactyl-application-api.client';
-import { PterodactylAuthError } from './pterodactyl-http.client';
-import { SsrfValidatorService } from './ssrf-validator.service';
 
 interface PrismaUpdateArgs {
   data: { status: InstanceStatus; lastError?: string | null; lastSyncedAt?: Date };
