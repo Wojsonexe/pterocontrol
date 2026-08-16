@@ -2,6 +2,7 @@ export interface EnvironmentVariables {
   DATABASE_URL: string;
   SECRETS_MASTER_KEY: string;
   JWT_SECRET: string;
+  RABBITMQ_URL: string;
   // Optional on purpose: if unset, POST /tenants (bootstrap) is simply
   // disabled (TenantsService.bootstrap rejects everything) - a safe
   // default, not a startup error, since bootstrap is a one-time,
@@ -15,6 +16,7 @@ const REQUIRED_KEYS: (keyof EnvironmentVariables)[] = [
   'DATABASE_URL',
   'SECRETS_MASTER_KEY',
   'JWT_SECRET',
+  'RABBITMQ_URL',
 ];
 
 /**

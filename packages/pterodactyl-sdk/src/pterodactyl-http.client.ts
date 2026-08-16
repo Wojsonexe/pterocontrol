@@ -11,7 +11,18 @@ export class PterodactylError extends Error {}
 export class PterodactylAuthError extends PterodactylError {}
 export class PterodactylNotFoundError extends PterodactylError {}
 export class PterodactylNetworkError extends PterodactylError {}
-export class PterodactylUpstreamError extends PterodactylError {}
+// statusCode is what lets a caller (e.g. federation-worker's retry
+// classifier) tell a transient 5xx from a permanent 4xx without parsing
+// the message string - undefined for the redirect case, which has no
+// single status (see assertNotRedirect: opaqueredirect has status 0).
+export class PterodactylUpstreamError extends PterodactylError {
+  constructor(
+    message: string,
+    public readonly statusCode?: number,
+  ) {
+    super(message);
+  }
+}
 export class PterodactylUnexpectedResponseError extends PterodactylError {}
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -124,11 +135,13 @@ export class PterodactylHttpClient {
     if (response.status >= 500) {
       throw new PterodactylUpstreamError(
         `Pterodactyl instance returned ${response.status}`,
+        response.status,
       );
     }
     if (!response.ok) {
       throw new PterodactylUpstreamError(
         `Unexpected status ${response.status}`,
+        response.status,
       );
     }
   }

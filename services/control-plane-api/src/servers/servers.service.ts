@@ -4,20 +4,25 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import {
-  PterodactylApplicationApiClient,
   PterodactylClientApiClient,
   PterodactylError,
   PterodactylPowerSignal,
   PterodactylResourceUsageDto,
 } from '@pterocontrol/pterodactyl-sdk';
+import {
+  createEnvelope,
+  EXCHANGES,
+  RabbitMqPublisherService,
+  ROUTING_KEYS,
+} from '@pterocontrol/rabbitmq';
+import { SecretsService } from '@pterocontrol/secrets';
 import { CredentialKind, ResourceSnapshot, Server } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
-import { EventsService } from '../events/events.service';
 import { InstancesService } from '../instances/instances.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { SecretsService } from '../secrets/secrets.service';
 
 export interface ServerFilters {
   instanceId?: string;
@@ -53,19 +58,21 @@ function toSnapshotDto(snapshot: ResourceSnapshot): ResourceSnapshotDto {
   };
 }
 
-export interface SyncResult {
-  synced: number;
+export interface QueuedJob {
+  status: 'queued';
+  jobId: string;
 }
 
 /**
  * Global server model: aggregates Server rows across every
- * PterodactylInstance a tenant owns, synced on-demand (via
- * syncInstance()) from the Application API's server inventory. No
- * background/scheduled polling yet (BullMQ worker) - see
- * IMPLEMENTATION_STATUS.md; this is the synchronous half of FAZA 3's
- * "server synchronization" requirement. Also owns live resources/power
- * actions (Client API, FAZA 6) - a different credential than the
- * Application API key used for inventory sync.
+ * PterodactylInstance a tenant owns. Inventory sync (syncInstance()) and
+ * periodic resource collection are both async now (FAZA 9b) - this
+ * service only publishes the job and returns; federation-worker does the
+ * actual Application API listServers() call, the upsert, and the
+ * server_created Event emission. This service still owns live
+ * synchronous reads (getResources(), power actions) - a different
+ * credential (Client API key) than the Application API key used for
+ * inventory sync.
  */
 @Injectable()
 export class ServersService {
@@ -75,86 +82,40 @@ export class ServersService {
     private readonly prisma: PrismaService,
     private readonly instancesService: InstancesService,
     private readonly secrets: SecretsService,
-    private readonly applicationApi: PterodactylApplicationApiClient,
     private readonly clientApi: PterodactylClientApiClient,
     private readonly auditService: AuditService,
-    private readonly eventsService: EventsService,
+    private readonly publisher: RabbitMqPublisherService,
   ) {}
 
-  async syncInstance(tenantId: string, instanceId: string): Promise<SyncResult> {
+  // Server inventory sync (list every server on the instance, upsert the
+  // global Server rows) is the "heavier" of the two federation calls -
+  // one HTTP request to Pterodactyl per instance, N upserts locally. This
+  // publishes federation.server.sync and returns immediately;
+  // federation-worker does the actual listServers()+upsert (see
+  // services/federation-worker/src/handlers/server-sync.handler.ts) -
+  // same upsert-by-(instanceId,pterodactylUuid) and server_created event
+  // logic that used to live here.
+  async syncInstance(tenantId: string, instanceId: string): Promise<QueuedJob> {
     const instance = await this.instancesService.findOneForTenant(tenantId, instanceId);
-    const apiKey = await this.getCredential(instance.id, CredentialKind.APPLICATION_API_KEY);
 
-    let remoteServers: Awaited<ReturnType<PterodactylApplicationApiClient['listServers']>>;
+    const envelope = createEnvelope({
+      tenantId,
+      instanceId: instance.id,
+      payload: {},
+    });
     try {
-      remoteServers = await this.applicationApi.listServers(instance.baseUrl, apiKey);
-    } catch (error) {
-      // A Pterodactyl-side failure (unreachable, bad key, unexpected
-      // response) must surface as a clean, expected HttpException - not
-      // fall through to AllExceptionsFilter's generic "Internal server
-      // error" 500, which is reserved for genuine bugs, not "the remote
-      // panel didn't answer".
-      const message = error instanceof PterodactylError ? error.message : String(error);
-      this.logger.warn(
-        `Server sync failed for instance ${instance.id} (tenant ${tenantId}): ${message}`,
+      this.publisher.publish(
+        EXCHANGES.FEDERATION_COMMANDS,
+        ROUTING_KEYS.SERVER_SYNC,
+        envelope,
       );
-      throw new BadGatewayException(`Could not sync servers from instance: ${message}`);
+    } catch (error) {
+      throw new ServiceUnavailableException(
+        `Could not queue server sync: ${String(error)}`,
+      );
     }
 
-    const existingUuids = new Set(
-      (
-        await this.prisma.server.findMany({
-          where: { instanceId: instance.id },
-          select: { pterodactylUuid: true },
-        })
-      ).map((s) => s.pterodactylUuid),
-    );
-
-    for (const remote of remoteServers) {
-      // Mapping local -> global: (instanceId, pterodactylUuid) is the
-      // natural key, never the bare Pterodactyl numeric id (not unique
-      // across independent installs) - matches docs/architecture §2.
-      const saved = await this.prisma.server.upsert({
-        where: {
-          instanceId_pterodactylUuid: {
-            instanceId: instance.id,
-            pterodactylUuid: remote.uuid,
-          },
-        },
-        update: {
-          name: remote.name,
-          identifier: remote.identifier,
-          nodeId: remote.node,
-          pterodactylId: remote.id,
-          lastSyncedAt: new Date(),
-        },
-        create: {
-          tenantId,
-          instanceId: instance.id,
-          pterodactylId: remote.id,
-          pterodactylUuid: remote.uuid,
-          identifier: remote.identifier,
-          name: remote.name,
-          nodeId: remote.node,
-        },
-      });
-
-      if (!existingUuids.has(remote.uuid)) {
-        await this.eventsService.record({
-          tenantId,
-          instanceId: instance.id,
-          serverId: saved.id,
-          type: 'server_created',
-          payload: { name: remote.name, identifier: remote.identifier },
-          dedupKey: `server_created:${instance.id}:${remote.uuid}`,
-        });
-      }
-    }
-
-    this.logger.log(
-      `Synced ${remoteServers.length} server(s) from instance ${instance.id} (tenant ${tenantId})`,
-    );
-    return { synced: remoteServers.length };
+    return { status: 'queued', jobId: envelope.jobId };
   }
 
   findAllForTenant(tenantId: string, filters: ServerFilters): Promise<Server[]> {
@@ -191,10 +152,11 @@ export class ServersService {
       throw new BadGatewayException(`Could not fetch server resources: ${message}`);
     }
 
-    // Every live look is also a data point - this is the only source of
-    // history until the federation-worker's periodic collector exists
-    // (see IMPLEMENTATION_STATUS.md). A failed clientApi call above never
-    // reaches here, so no snapshot is recorded for a failed read.
+    // Every live look is also a data point, in addition to the periodic
+    // background collection now done by federation-worker's
+    // resources-collect handler (see ResourceCollectionScheduler). A
+    // failed clientApi call above never reaches here, so no snapshot is
+    // recorded for a failed read.
     await this.prisma.resourceSnapshot.create({
       data: {
         tenantId,

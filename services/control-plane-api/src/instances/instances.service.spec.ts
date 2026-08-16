@@ -1,13 +1,22 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { CredentialKind, InstanceStatus } from '@prisma/client';
 import {
   PterodactylApplicationApiClient,
   PterodactylAuthError,
   SsrfValidatorService,
 } from '@pterocontrol/pterodactyl-sdk';
+import {
+  EXCHANGES,
+  ROUTING_KEYS,
+  RabbitMqPublisherService,
+} from '@pterocontrol/rabbitmq';
+import { SecretsService } from '@pterocontrol/secrets';
 import { EventsService } from '../events/events.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { SecretsService } from '../secrets/secrets.service';
 import { InstancesService } from './instances.service';
 
 interface PrismaUpdateArgs {
@@ -32,6 +41,7 @@ describe('InstancesService', () => {
   const secretsMock = { encrypt: jest.fn(), decrypt: jest.fn() };
   const applicationApiMock = { testConnection: jest.fn() };
   const eventsServiceMock = { record: jest.fn() };
+  const publisherMock = { publish: jest.fn() };
 
   let service: InstancesService;
 
@@ -51,6 +61,7 @@ describe('InstancesService', () => {
       secretsMock as unknown as SecretsService,
       applicationApiMock as unknown as PterodactylApplicationApiClient,
       eventsServiceMock as unknown as EventsService,
+      publisherMock as unknown as RabbitMqPublisherService,
     );
   });
 
@@ -205,7 +216,7 @@ describe('InstancesService', () => {
   });
 
   describe('resync', () => {
-    it('decrypts the stored Application API key and re-tests connectivity', async () => {
+    it('publishes a federation.instance.sync job instead of calling Pterodactyl inline', async () => {
       prismaMock.pterodactylInstance.findFirst.mockResolvedValueOnce({
         id: 'inst-1',
         tenantId,
@@ -214,23 +225,52 @@ describe('InstancesService', () => {
       prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
         ciphertext: Buffer.from('enc'),
       });
-      prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce({
-        status: InstanceStatus.UNREACHABLE,
-      }); // testAndUpdateStatus's "previous status" lookup
-      secretsMock.decrypt.mockReturnValueOnce('decrypted-key');
-      ssrfMock.assertSafe.mockResolvedValueOnce(undefined);
-      applicationApiMock.testConnection.mockResolvedValueOnce(undefined);
-      prismaMock.pterodactylInstance.update.mockResolvedValueOnce({
+
+      const result = await service.resync(tenantId, 'inst-1');
+
+      expect(result.status).toBe('queued');
+      expect(typeof result.jobId).toBe('string');
+      expect(applicationApiMock.testConnection).not.toHaveBeenCalled();
+      expect(publisherMock.publish).toHaveBeenCalledWith(
+        EXCHANGES.FEDERATION_COMMANDS,
+        ROUTING_KEYS.INSTANCE_SYNC,
+        expect.objectContaining({
+          jobId: result.jobId,
+          tenantId,
+          instanceId: 'inst-1',
+        }),
+      );
+    });
+
+    it('404s when the instance has no Application API credential stored', async () => {
+      prismaMock.pterodactylInstance.findFirst.mockResolvedValueOnce({
         id: 'inst-1',
-        status: InstanceStatus.ONLINE,
+        tenantId,
+        baseUrl: dto.baseUrl,
+      });
+      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce(null);
+
+      await expect(service.resync(tenantId, 'inst-1')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(publisherMock.publish).not.toHaveBeenCalled();
+    });
+
+    it('returns a controlled 503 instead of crashing when RabbitMQ is down', async () => {
+      prismaMock.pterodactylInstance.findFirst.mockResolvedValueOnce({
+        id: 'inst-1',
+        tenantId,
+        baseUrl: dto.baseUrl,
+      });
+      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
+        ciphertext: Buffer.from('enc'),
+      });
+      publisherMock.publish.mockImplementationOnce(() => {
+        throw new Error('RabbitMQ channel is not available (connection down)');
       });
 
-      await service.resync(tenantId, 'inst-1');
-
-      expect(secretsMock.decrypt).toHaveBeenCalledWith(Buffer.from('enc'));
-      expect(applicationApiMock.testConnection).toHaveBeenCalledWith(
-        dto.baseUrl,
-        'decrypted-key',
+      await expect(service.resync(tenantId, 'inst-1')).rejects.toThrow(
+        ServiceUnavailableException,
       );
     });
   });

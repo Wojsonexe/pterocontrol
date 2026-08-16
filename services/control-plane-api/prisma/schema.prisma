@@ -159,6 +159,23 @@ model AuditLog {
   @@index([tenantId, at])
 }
 
+// Idempotency ledger for federation-worker's RabbitMQ consumer. At-least-once
+// delivery means the same jobId can be redelivered (worker crash after ack
+// was sent but before it reached the broker, requeue after a nack, etc.) -
+// before doing any side effect the worker checks whether jobId is already
+// here; if so it just acks and skips. jobId unique constraint doubles as the
+// race guard for two redeliveries processed concurrently by different
+// worker instances (P2002 on insert -> already handled, not an error).
+model ProcessedJob {
+  id          String   @id @default(uuid())
+  jobId       String   @unique
+  jobType     String
+  tenantId    String
+  processedAt DateTime @default(now())
+
+  @@index([tenantId, processedAt])
+}
+
 // "What happened" (system-observed, e.g. detected during a sync) - distinct
 // from AuditLog ("who did what", operator-initiated actions). dedupKey has a
 // unique constraint: EventsService.record() treats a P2002 violation on it

@@ -13,7 +13,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { AuthenticatedUser } from '../auth/guards/jwt-auth.guard';
 import { CreateInstanceDto } from './dto/create-instance.dto';
-import { InstancesService } from './instances.service';
+import { InstancesService, QueuedJob } from './instances.service';
 
 @Controller('instances')
 export class InstancesController {
@@ -43,11 +43,11 @@ export class InstancesController {
 
   @Roles('owner', 'admin')
   @Post(':id/sync')
-  @HttpCode(HttpStatus.OK)
+  @HttpCode(HttpStatus.ACCEPTED)
   resync(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
-  ): Promise<PterodactylInstance> {
+  ): Promise<QueuedJob> {
     return this.instancesService.resync(user.tenantId, id);
   }
 

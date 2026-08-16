@@ -14,7 +14,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { AuthenticatedUser } from '../auth/guards/jwt-auth.guard';
 import { PowerActionDto } from './dto/power-action.dto';
-import { ResourceSnapshotDto, ServersService, SyncResult } from './servers.service';
+import { QueuedJob, ResourceSnapshotDto, ServersService } from './servers.service';
 
 @Controller('servers')
 export class ServersController {
@@ -72,10 +72,11 @@ export class ServersController {
 
   @Roles('owner', 'admin')
   @Post('sync/:instanceId')
+  @HttpCode(HttpStatus.ACCEPTED)
   sync(
     @CurrentUser() user: AuthenticatedUser,
     @Param('instanceId') instanceId: string,
-  ): Promise<SyncResult> {
+  ): Promise<QueuedJob> {
     return this.serversService.syncInstance(user.tenantId, instanceId);
   }
 }

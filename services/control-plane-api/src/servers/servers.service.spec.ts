@@ -1,21 +1,23 @@
-import { BadGatewayException, BadRequestException, NotFoundException } from '@nestjs/common';
 import {
-  PterodactylApplicationApiClient,
+  BadGatewayException,
+  BadRequestException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import {
   PterodactylAuthError,
   PterodactylClientApiClient,
-  PterodactylNotFoundError,
 } from '@pterocontrol/pterodactyl-sdk';
+import {
+  EXCHANGES,
+  ROUTING_KEYS,
+  RabbitMqPublisherService,
+} from '@pterocontrol/rabbitmq';
+import { SecretsService } from '@pterocontrol/secrets';
 import { AuditService } from '../audit/audit.service';
-import { EventsService } from '../events/events.service';
 import { InstancesService } from '../instances/instances.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { SecretsService } from '../secrets/secrets.service';
 import { ServersService } from './servers.service';
-
-interface ServerUpsertArgs {
-  where: { instanceId_pterodactylUuid: { instanceId: string; pterodactylUuid: string } };
-  create: { tenantId: string; pterodactylUuid: string; name: string };
-}
 
 interface AuditRecordArgs {
   tenantId: string;
@@ -31,7 +33,6 @@ describe('ServersService', () => {
   const prismaMock = {
     instanceCredential: { findUnique: jest.fn() },
     server: {
-      upsert: jest.fn<Promise<unknown>, [ServerUpsertArgs]>(),
       findMany: jest.fn(),
       findFirst: jest.fn(),
     },
@@ -42,10 +43,9 @@ describe('ServersService', () => {
   };
   const instancesServiceMock = { findOneForTenant: jest.fn() };
   const secretsMock = { decrypt: jest.fn() };
-  const applicationApiMock = { listServers: jest.fn() };
   const clientApiMock = { getResourceUsage: jest.fn(), sendPowerAction: jest.fn() };
   const auditServiceMock = { record: jest.fn<Promise<void>, [AuditRecordArgs]>() };
-  const eventsServiceMock = { record: jest.fn() };
+  const publisherMock = { publish: jest.fn() };
 
   let service: ServersService;
   const tenantId = 't-1';
@@ -57,10 +57,9 @@ describe('ServersService', () => {
       prismaMock as unknown as PrismaService,
       instancesServiceMock as unknown as InstancesService,
       secretsMock as unknown as SecretsService,
-      applicationApiMock as unknown as PterodactylApplicationApiClient,
       clientApiMock as unknown as PterodactylClientApiClient,
       auditServiceMock as unknown as AuditService,
-      eventsServiceMock as unknown as EventsService,
+      publisherMock as unknown as RabbitMqPublisherService,
     );
   });
 
@@ -73,90 +72,36 @@ describe('ServersService', () => {
       await expect(service.syncInstance(tenantId, 'inst-1')).rejects.toThrow(
         NotFoundException,
       );
-      expect(applicationApiMock.listServers).not.toHaveBeenCalled();
+      expect(publisherMock.publish).not.toHaveBeenCalled();
     });
 
-    it('rejects when the instance has no stored Application API credential', async () => {
+    it('publishes a federation.server.sync job instead of calling Pterodactyl inline', async () => {
       instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
-      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce(null);
-
-      // BadRequestException, not NotFoundException: this is a
-      // configuration problem ("you never gave this instance an
-      // Application API key"), the same exception type getResources()/
-      // sendPowerAction() use for their own missing-credential case
-      // below - one shared getCredential() helper, one consistent status.
-      await expect(service.syncInstance(tenantId, 'inst-1')).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('maps a Pterodactyl-side failure to a clean BadGatewayException, not a raw 500', async () => {
-      instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
-      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
-        ciphertext: Buffer.from('enc'),
-      });
-      secretsMock.decrypt.mockReturnValueOnce('decrypted-key');
-      applicationApiMock.listServers.mockRejectedValueOnce(
-        new PterodactylNotFoundError('Endpoint not found on Pterodactyl instance'),
-      );
-
-      await expect(service.syncInstance(tenantId, 'inst-1')).rejects.toThrow(
-        BadGatewayException,
-      );
-      expect(prismaMock.server.upsert).not.toHaveBeenCalled();
-    });
-
-    it('upserts each remote server keyed by (instanceId, pterodactylUuid), never by the bare numeric id', async () => {
-      instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
-      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
-        ciphertext: Buffer.from('enc'),
-      });
-      secretsMock.decrypt.mockReturnValueOnce('decrypted-key');
-      applicationApiMock.listServers.mockResolvedValueOnce([
-        { id: 5, uuid: 'uuid-5', identifier: 'd5', name: 'Survival', node: 1 },
-        { id: 6, uuid: 'uuid-6', identifier: 'd6', name: 'Creative', node: 1 },
-      ]);
-      prismaMock.server.findMany.mockResolvedValueOnce([]); // no pre-existing servers - both are new
-      prismaMock.server.upsert
-        .mockResolvedValueOnce({ id: 'srv-5' })
-        .mockResolvedValueOnce({ id: 'srv-6' });
 
       const result = await service.syncInstance(tenantId, 'inst-1');
 
-      expect(applicationApiMock.listServers).toHaveBeenCalledWith(
-        instance.baseUrl,
-        'decrypted-key',
-      );
-      expect(prismaMock.server.upsert).toHaveBeenCalledTimes(2);
-      const firstCallArgs = prismaMock.server.upsert.mock.calls[0][0];
-      expect(firstCallArgs.where).toEqual({
-        instanceId_pterodactylUuid: { instanceId: 'inst-1', pterodactylUuid: 'uuid-5' },
-      });
-      expect(firstCallArgs.create.tenantId).toBe(tenantId);
-      expect(firstCallArgs.create.pterodactylUuid).toBe('uuid-5');
-      expect(firstCallArgs.create.name).toBe('Survival');
-      expect(result).toEqual({ synced: 2 });
-      expect(eventsServiceMock.record).toHaveBeenCalledTimes(2);
-      expect(eventsServiceMock.record).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'server_created', serverId: 'srv-5' }),
+      expect(result.status).toBe('queued');
+      expect(typeof result.jobId).toBe('string');
+      expect(publisherMock.publish).toHaveBeenCalledWith(
+        EXCHANGES.FEDERATION_COMMANDS,
+        ROUTING_KEYS.SERVER_SYNC,
+        expect.objectContaining({
+          jobId: result.jobId,
+          tenantId,
+          instanceId: 'inst-1',
+        }),
       );
     });
 
-    it('does not emit server_created for a server that was already known', async () => {
+    it('returns a controlled 503 instead of crashing when RabbitMQ is down', async () => {
       instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
-      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
-        ciphertext: Buffer.from('enc'),
+      publisherMock.publish.mockImplementationOnce(() => {
+        throw new Error('RabbitMQ channel is not available (connection down)');
       });
-      secretsMock.decrypt.mockReturnValueOnce('decrypted-key');
-      applicationApiMock.listServers.mockResolvedValueOnce([
-        { id: 5, uuid: 'uuid-5', identifier: 'd5', name: 'Survival', node: 1 },
-      ]);
-      prismaMock.server.findMany.mockResolvedValueOnce([{ pterodactylUuid: 'uuid-5' }]);
-      prismaMock.server.upsert.mockResolvedValueOnce({ id: 'srv-5' });
 
-      await service.syncInstance(tenantId, 'inst-1');
-
-      expect(eventsServiceMock.record).not.toHaveBeenCalled();
+      await expect(service.syncInstance(tenantId, 'inst-1')).rejects.toThrow(
+        ServiceUnavailableException,
+      );
     });
   });
 

@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import {
   CredentialKind,
@@ -14,10 +15,21 @@ import {
   PterodactylError,
   SsrfValidatorService,
 } from '@pterocontrol/pterodactyl-sdk';
+import {
+  createEnvelope,
+  EXCHANGES,
+  RabbitMqPublisherService,
+  ROUTING_KEYS,
+} from '@pterocontrol/rabbitmq';
+import { SecretsService } from '@pterocontrol/secrets';
 import { EventsService } from '../events/events.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { SecretsService } from '../secrets/secrets.service';
 import { CreateInstanceDto } from './dto/create-instance.dto';
+
+export interface QueuedJob {
+  status: 'queued';
+  jobId: string;
+}
 
 /**
  * Instance CRUD, tenant-scoped everywhere: every method takes tenantId
@@ -36,6 +48,7 @@ export class InstancesService {
     private readonly secrets: SecretsService,
     private readonly applicationApi: PterodactylApplicationApiClient,
     private readonly eventsService: EventsService,
+    private readonly publisher: RabbitMqPublisherService,
   ) {}
 
   async create(
@@ -123,7 +136,14 @@ export class InstancesService {
     await this.prisma.pterodactylInstance.delete({ where: { id: instance.id } });
   }
 
-  async resync(tenantId: string, id: string): Promise<PterodactylInstance> {
+  // Connectivity re-check is a real outbound call to a third-party host
+  // with its own latency/timeout - exactly the kind of operation the
+  // RabbitMQ mandate says an HTTP request must not perform synchronously.
+  // This publishes federation.instance.sync and returns immediately;
+  // federation-worker does the actual check and updates status/lastError/
+  // lastSyncedAt + emits the instance_status_changed Event on a real
+  // transition (see services/federation-worker/src/handlers/instance-sync.handler.ts).
+  async resync(tenantId: string, id: string): Promise<QueuedJob> {
     const instance = await this.findOneForTenant(tenantId, id);
     const credential = await this.prisma.instanceCredential.findUnique({
       where: {
@@ -139,8 +159,27 @@ export class InstancesService {
       );
     }
 
-    const apiKey = this.secrets.decrypt(Buffer.from(credential.ciphertext));
-    return this.testAndUpdateStatus(instance.id, tenantId, instance.baseUrl, apiKey);
+    const envelope = createEnvelope({
+      tenantId,
+      instanceId: instance.id,
+      payload: {},
+    });
+    try {
+      this.publisher.publish(
+        EXCHANGES.FEDERATION_COMMANDS,
+        ROUTING_KEYS.INSTANCE_SYNC,
+        envelope,
+      );
+    } catch (error) {
+      // RabbitMqPublisherService.publish() throws synchronously when the
+      // broker connection is down - a controlled 503, never an unhandled
+      // crash (see RabbitmqModule's doc comment).
+      throw new ServiceUnavailableException(
+        `Could not queue instance sync: ${String(error)}`,
+      );
+    }
+
+    return { status: 'queued', jobId: envelope.jobId };
   }
 
   private async testAndUpdateStatus(
