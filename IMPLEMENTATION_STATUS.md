@@ -1,6 +1,6 @@
 # Pterocontrol Control Plane — stan implementacji
 
-Ostatnia aktualizacja: 2026-08-16, branch `feature/control-plane-mvp`, ostatni commit `7486dbf`.
+Ostatnia aktualizacja: 2026-08-16, branch `feature/control-plane-mvp`, ostatni commit `98225bd`.
 
 Dokument-punkt-kontrolny w trybie autonomicznej implementacji. Kolejna sesja: przeczytaj to w całości, potem kontynuuj od sekcji "Następny konkretny krok" — nie projektuj architektury od nowa, jest już ustalona i częściowo zaimplementowana.
 
@@ -126,11 +126,22 @@ Repo to Flutter (`lib/`, `android/`, `ios/`, `test/`, korzeń repo) + backend ob
 - Zweryfikowane REALNIE (tymczasowy Postgres+RabbitMQ w Dockerze, realny proces `control-plane-api`, realny ruch do `https://example.com`): `GET` na wszystkich czterech grupach → `502` z czytelnym komunikatem; `POST /servers/:id/schedules` → `502` + **potwierdzony realny wpis `AuditLog`** (`action:"schedule.create"`, `result:"error"`, oryginalny komunikat błędu Pterodactyla w `metadata`, zapytanie bezpośrednio przez Prisma).
 - Testy: rozszerzenie `pterodactyl-client-api.client.spec.ts` do 75 testów łącznie, 3 nowe w `server-credential-resolver.service.spec.ts`, plus spec per nowy moduł control-plane-api (`schedules`/`allocations`/`server-databases`/`activity`).
 
+### Database Gateway — bezpośredni SQL do baz MySQL provisionowanych przez Pterodactyla
+- Pierwsza faza tej sesji, w której zatrzymałem się i zapytałem użytkownika (`AskUserQuestion`) zamiast zgadywać — dwie decyzje z realnymi konsekwencjami bezpieczeństwa, nie dało się ich rozstrzygnąć z samego kodu:
+  1. **Przechowywanie hasła bazy**: Pterodactyl zwraca plaintext hasło tylko raz, przy create/rotate-password. Użytkownik wybrał trwałe przechowywanie zaszyfrowane (opcja "Recommended") zamiast wymagania podawania go za każdym razem.
+  2. **Zakres SQL**: użytkownik wybrał pełne DML (SELECT/INSERT/UPDATE/DELETE) z jawnym wykluczeniem DDL — świadomie inny wybór niż domyślnie rekomendowany "tylko SELECT".
+- `ServerDatabaseCredential` (Prisma, migracja `20260816205332_add_server_database_credential`) — host/port/nazwa/username/`ciphertext` (AES-256-GCM przez `SecretsService`, ten sam mechanizm co `InstanceCredential`), `unique(serverId, pterodactylDatabaseId)`. `ServerDatabaseCredentialService.upsert()` wołane przez `ServerDatabasesService.create()`/`rotatePassword()` dokładnie w tych dwóch momentach, gdy Pterodactyl faktycznie oddaje plaintext hasło; `remove()` sprząta przy usunięciu bazy; `resolve()` jest tenant+server+database-scoped (obcy tenant dostaje `404`, nie `403` — nie ujawnia nawet istnienia wpisu).
+- `sql-guard.ts` — pragmatyczny keyword/shape guard, jawnie udokumentowany jako **nie pełny parser SQL**: odrzuca puste zapytania, stacked statements (`;` przed końcem), statement niezaczynający się od `SELECT`/`INSERT`/`UPDATE`/`DELETE`, i każde wystąpienie słowa kluczowego DDL/uprawnień (`CREATE`/`ALTER`/`DROP`/`TRUNCATE`/`RENAME`/`GRANT`/`REVOKE`) gdziekolwiek w treści.
+- `DatabaseGatewayService` — nowa zależność `mysql2`, łączy się bezpośrednio z MySQL (bez pośrednictwa Pterodactyla — to cały sens Gatewaya), timeout zapytania 10s, twardy limit 500 zwracanych wierszy z jawnie udokumentowanym ograniczeniem: obcięcie następuje **po** zbuforowaniu całego wyniku przez driver (`mysql2/promise` nie ma prawdziwego streaming cursora), więc bardzo duży niezaobcięty `SELECT` nadal kosztuje pamięć przed obcięciem — ograniczenie ujawnione, nie ukryte. `AuditLog` na każde zapytanie (sukces i błąd) z treścią SQL (obcięte do 2000 znaków) i `rowCount`/`affectedRows`; hasło bazy nigdy nie trafia do metadanych.
+- `POST /servers/:serverId/databases/:databaseId/query` — RBAC `owner`/`admin` (wyższa poprzeczka niż zwykłe proxy, bo to surowy SQL).
+- Zweryfikowane REALNIE inaczej niż reszta Federation Layer: mechanizm Gatewaya (połączenie z MySQL, wykonanie zapytania) nie wymaga Pterodactyla w ogóle, tylko prawdziwego MySQL — więc mógł być przetestowany w pełni realnie, nie tylko przez `https://example.com`. Tymczasowy Postgres + tymczasowy prawdziwy MySQL 8.0 w Dockerze jako stand-in za bazę node'a: realny `SELECT` przez TCP → 3 wiersze; realny `INSERT`('dave') i `UPDATE`(banned=1 dla 'bob') → potwierdzone bezpośrednim odczytem tabeli w MySQL po fakcie; `DROP TABLE` → `400` (zablokowane przez guard, zero ruchu do MySQL); stacked statement → `400`; nieznane `databaseId` → `404`; drugi, realnie zabootstrapowany tenant próbujący odpytać tę samą bazę → `404` (izolacja tenantów); 3 realne wpisy `AuditLog` w Postgresie potwierdzone bezpośrednim zapytaniem Prisma, hasło (znane z seeda) nieobecne w żadnym z nich.
+- Testy: `sql-guard.spec.ts` (12), `server-database-credential.service.spec.ts` (6), `database-gateway.service.spec.ts` (7), plus 2 nowe w `server-databases.service.spec.ts` na `upsert`/`remove` credentiala.
+
 ## Stan testów
 
 ```
-293 testy łącznie, wszystkie przechodzą
-  (128 control-plane-api + 65 federation-worker + 75 pterodactyl-sdk + 22 rabbitmq + 3 secrets)
+323 testy łącznie, wszystkie przechodzą
+  (158 control-plane-api + 65 federation-worker + 75 pterodactyl-sdk + 22 rabbitmq + 3 secrets)
 npm run typecheck  -> czysty (wszystkie 5 workspace'ów)
 npm run lint        -> czysty (wszystkie 5 workspace'ów)
 ```
@@ -157,7 +168,9 @@ npm run start:dev
 - **Brak testów kolejności wiadomości (message-ordering)** w `federation-worker` — nie było jeszcze przypadku w kodzie, gdzie kolejność między dwiema wiadomościami faktycznie ma znaczenie (każdy handler operuje na innym jobId niezależnie).
 - **Notifications ma tylko jeden typ kanału (WEBHOOK)** — enum otwarty na SLACK/EMAIL, ale niezaimplementowane (EMAIL wymagałby prawdziwych danych SMTP, których nie mam — świadomie odłożone, nie fake'owane).
 - **Kontrakt API dla Backups, Server Configuration, Schedules, Allocations, Server Databases i Activity nie jest zweryfikowany względem Flutter/istniejącego kodu** — pochodzi z ogólnej wiedzy o publicznym Pterodactyl Client API v1, nie z lokalnego źródła prawdy (jawnie zaznaczone w kodzie i wyżej, potwierdzone za każdym razem dedykowanym przeszukaniem `lib/`).
-- **Nic z Activity wzwyż nie istnieje**: Database Gateway (osobny serwis), Mobile client (tryb Control Plane), Security hardening review, pełne testy integracyjne/E2E, produkcyjny deployment (Prometheus/Grafana/Traefik/TLS).
+- **`sql-guard.ts` to pragmatyczny keyword/shape guard, nie pełny parser SQL** — łapie stacked statements i słowa kluczowe DDL, ale nie każde możliwe nadużycie surowego SQL (np. nie ma ochrony przed kosztownym `SELECT` bez `WHERE`/`LIMIT` na dużej tabeli poza obcięciem wyniku po fakcie). Zaakceptowane ryzyko dla uwierzytelnionego `owner`/`admin`, opisane wyżej.
+- **Database Gateway obcina wynik `SELECT` po stronie aplikacji, po zbuforowaniu przez driver** — nie jest to prawdziwy streaming cursor z twardym limitem pamięci; bardzo duży niezaobcięty `SELECT` nadal kosztuje pamięć przed obcięciem do 500 wierszy.
+- **Nic z Database Gateway wzwyż nie istnieje**: Mobile client (tryb Control Plane), Security hardening review, pełne testy integracyjne/E2E, produkcyjny deployment (Prometheus/Grafana/Traefik/TLS).
 - **`infra/docker-compose.yml` wystawia RabbitMQ Management UI na `0.0.0.0:15672`** — akceptowalne dla lokalnego dev, ale mandat RabbitMQ wymaga wprost, żeby nigdy nie było to publicznie dostępne w produkcji; do naprawienia w fazie production/deployment (osobny compose/profil, port bindowany tylko na localhost albo VPN).
 
 ## Znane ograniczenia środowiska (nie kod, ale warte zapisania)
@@ -167,15 +180,31 @@ npm run start:dev
 
 ## Następny konkretny krok
 
-**Database Gateway** (punkt 8 z listy uzgodnionej z użytkownikiem) — osobny, bezpieczny mechanizm bezpośredniego dostępu SQL do baz danych serwerów gry z poziomu Control Plane.
+**Flutter — tryb Control Plane w istniejącej aplikacji** (punkt 9 z listy uzgodnionej z użytkownikiem).
 
-**Kluczowe rozróżnienie, żeby nie pomylić z tym, co już istnieje**: `server-databases` (moduł ukończony w tej fazie) to proxy 1:1 do Pterodactyl Client API — tworzenie/usuwanie/rotacja hasła bazy MySQL, którą **Pterodactyl sam provisionuje** na swoim hoście bazodanowym node'a. Database Gateway to zupełnie inna funkcja: bezpośrednie, kontrolowane wykonywanie zapytań SQL (prawdopodobnie tylko odczyt/ograniczony zestaw operacji) do już istniejącej bazy, z poziomu Control Plane, bez konieczności łączenia się z nią osobnym klientem MySQL. To wymaga nowych decyzji projektowych, nie tylko kolejnego proxy.
+**Rozstrzygnięty konflikt instrukcji**: sesja miała wcześniej stałą zasadę "nigdy nie dotykaj `lib/`, `android/`, `ios/`, `test/`, `pubspec.yaml`". Zapytany wprost, użytkownik potwierdził, że ta zasada chroniła Fluttera wyłącznie podczas faz backendowych (1-8), żeby uniknąć przypadkowego scope creep — punkt 9 świadomie ją znosi. Zmiany w `lib/` są teraz autoryzowane, pod warunkiem trzymania się istniejącej architektury aplikacji (nie przepisywać, dobudowywać).
 
-Otwarte pytania do rozstrzygnięcia na podstawie realnego kodu/kontraktu (nie zgadywać):
-1. **Skąd Gateway bierze dane do połączenia z bazą MySQL** — Pterodactyl Client API (`listServerDatabases`, już zaimplementowane) zwraca `host`/`port`/`username`, ale NIE zwraca hasła w plaintext poza momentem tworzenia/rotacji. Sprawdzić: czy Control Plane ma przechowywać hasło bazy (nowa tabela, szyfrowana jak `InstanceCredential`) w momencie tworzenia/rotacji, czy Gateway ma wymagać, żeby użytkownik za każdym razem podał hasło ręcznie. To jest decyzja architektoniczna z realnymi konsekwencjami bezpieczeństwa (przechowywanie sekretu bazy danych w drugim miejscu) — może kwalifikować się jako jeden z 5 dozwolonych warunków przerwania (nieodwracalna decyzja biznesowa/bezpieczeństwa), do rozważenia zamiast zgadywania.
-2. **Zakres operacji SQL** — czytelny SELECT z whitelistą tabel/limitem wierszy jest bezpieczny; dowolny SQL (w tym DDL/DELETE) na cudzej bazie danych to poważne ryzyko i prawdopodobnie wykracza poza rozsądny zakres MVP bez dużo głębszego review bezpieczeństwa.
-3. **Sieciowa dosięgalność** — baza MySQL node'a Pterodactyla zwykle NIE jest wystawiona publicznie; Control Plane (control-plane-api lub federation-worker) musiałby mieć sieciową łączność do hosta bazy node'a, co może wymagać dodatkowej konfiguracji per-instance (host bazy bywa inny niż `baseUrl` panelu) — sprawdzić, czy `listServerDatabases` daje wystarczające dane, czy potrzebny jest dodatkowy krok konfiguracyjny.
+**Zwiad architektury Fluttera** (dedykowany agent Explore, read-only, przed jakąkolwiek decyzją projektową — ta sama dyscyplina co przy każdej wcześniejszej fazie):
+- Wejście: `lib/main.dart` → `PterodactylMobileApp` (`lib/app/app.dart`), `MaterialApp.router`. Routing: **go_router** (`lib/app/router/app_router.dart`) — `StatefulShellRoute.indexedStack` z czterema gałęziami (Dashboard/Servers/Activity/Settings) pod `AppShell`. Stan: **Riverpod** wszędzie, zero Provider/Bloc/GetX.
+- Struktura feature'ów: `lib/features/{authentication,instances,servers,console,files,dashboard,activity,settings}/` w warstwach `domain/data/application/presentation` + `lib/core/` (network, theme, storage, error, widgets).
+- Istniejący klient HTTP: **Dio**, budowany per-instance przez `PterodactylApiClientFactory.createFor({baseUrl, authTokenProvider})` (`lib/core/network/`), z `AuthInterceptor` i debug-only `LogInterceptor` (celowo nie loguje headerów/body, żeby nie wyciekł token).
+- Model wielo-instancyjny już istnieje: `PterodactylInstance` (`lib/features/instances/domain/pterodactyl_instance.dart`) ma własny `baseUrl`; każda instancja ma osobny wpis w `SecureCredentialStorage` (`flutter_secure_storage`, klucz `credentials.$instanceId`, dziś tylko pojedynczy `apiKey` — brak pojęcia tokenu/sesji). **Brak dyskryminatora "rodzaju" instancji** — dziś zakłada się Pterodactyl.
+- Wzorzec placeholderów: `ComingSoonView` (`lib/core/presentation/widgets/coming_soon_view.dart`) używany m.in. w zakładce Backups `server_detail_screen.dart`, `activity_screen.dart`, `security_settings_screen.dart`, `account_settings_screen.dart`; zakładka Startup/Environment w `server_detail_screen.dart` ma osobny, lokalny placeholder (`_SettingsSectionPlaceholder`).
+- Zależności już w `pubspec.yaml` nadające się do reużycia: `dio`, `flutter_secure_storage`, `shared_preferences`, `web_socket_channel`, `go_router`, `flutter_riverpod` — nic nowego nie powinno być potrzebne na start.
 
-Zacząć od: przeczytać dokładnie już zaimplementowany `listServerDatabases`/`createServerDatabase` (`packages/pterodactyl-sdk`) i sprawdzić realny kształt zwracanych danych (host/port), potem podjąć minimalną, bezpieczną decyzję projektową (prawdopodobnie: read-only, whitelist, jawne przechowywanie hasła jako nowy `CredentialKind` analogiczny do `CLIENT_API_KEY`) i zaimplementować wąski, ale realny (nie fake'owany) MVP. Jeśli po przeczytaniu kodu i dokumentacji API nadal brakuje danych do podjęcia bezpiecznej decyzji (np. brak jasności co do sieciowej dosięgalności bez dostępu do prawdziwego Pterodactyla) — to legitny powód przerwania i zapytania użytkownika, zgodnie z 5 dozwolonymi warunkami z mandatu tej sesji.
+**Kluczowa decyzja projektowa do podjęcia PRZED pisaniem kodu** (nie zgadywać, ale to decyzja techniczna wynikająca wprost z istniejącej architektury, nie business/security decyzja wymagająca użytkownika): jak Control Plane wpasowuje się w istniejący model wielo-instancyjny. Dwie opcje:
+1. Rozszerzyć `PterodactylInstance` o dyskryminator rodzaju (`PTERODACTYL_DIRECT` / `CONTROL_PLANE`) i ujednolicić listę serwerów pod jednym UI.
+2. Osobna, równoległa sekcja/gałąź nawigacji "Control Plane" z własnym auth (JWT), własnym wpisem w secure storage, własnym Dio-klientem wskazującym na `control-plane-api` zamiast panelu Pterodactyla bezpośrednio.
+Rekomendacja robocza: opcja 2 na start (mniejszy blast radius na istniejący, działający kod Pterodactyl-direct; Control Plane API ma inny kształt danych — global server id, JWT zamiast API key, multi-tenant — więc "ujednolicenie" byłoby przedwczesną abstrakcją). Zweryfikować przy pisaniu pierwszego ekranu, czy to się faktycznie broni.
 
-Po tej fazie: Flutter (rozbudowa istniejącej apki o tryb Control Plane) → security review → E2E → production/deployment, zgodnie z listą uzgodnioną z użytkownikiem. Kontynuować autonomicznie, bez zatrzymywania się na potwierdzenie między etapami — z wyjątkiem opisanego wyżej możliwego przerwania przy Database Gateway, jeśli faktycznie się zmaterializuje.
+**Kontrakt API do wdrożenia jest już znany na pewno** (napisany w tej samej sesji, nie trzeba zgadywać ani przeszukiwać Fluttera): `POST /tenants` (bootstrap), `POST /auth/login` (JWT), `GET /servers`, `GET /servers/:id`, `GET /servers/:id/resources[/history]`, `POST /servers/:id/power`, plus wszystkie moduły per-serwerowe zbudowane w tej sesji (alerts, notifications, backups, startup, schedules, allocations, databases, activity, database gateway).
+
+**Zakres pierwszego, wąskiego MVP-slice'a** (mirror sposobu, w jaki budowany był sam backend — przyrostowo, nie wszystko naraz):
+1. Ekran logowania Control Plane (JWT) + bezpieczne przechowanie tokenu (nowy wpis w `SecureCredentialStorage` lub analogiczny mechanizm, rozszerzenie modelu credentiali o token zamiast/obok `apiKey`).
+2. Lista serwerów z `GET /servers` (global model, nie per-instance Pterodactyl).
+3. Ekran szczegółów serwera: zasoby (`GET /servers/:id/resources`) + power control (`POST /servers/:id/power`) — odpowiednik już istniejących ekranów Pterodactyl-direct, ale wpięty w nowy backend.
+4. Dopiero potem: kolejne moduły (alerts/notifications/backups/itd.) jako kolejne przyrosty, każdy z realną weryfikacją (uruchomiony backend + emulator/urządzenie, nie tylko `flutter analyze`).
+
+Testy: istniejący `test/` używa jakiego frameworka/wzorca — **do sprawdzenia na starcie tej fazy** (nie zakładać, sprawdzić realnie, tak jak zawsze w tej sesji), potem dopisać analogiczne testy dla nowych ekranów/providerów.
+
+Po tej fazie: security review → testy E2E → production/deployment, zgodnie z listą uzgodnioną z użytkownikiem. Kontynuować autonomicznie, bez zatrzymywania się na potwierdzenie między etapami, chyba że pojawi się jeden z 5 dozwolonych warunków przerwania z mandatu tej sesji.
