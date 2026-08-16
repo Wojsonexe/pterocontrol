@@ -131,4 +131,41 @@ describe('PterodactylHttpClient', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
   });
+
+  describe('delete', () => {
+    it('sends a DELETE request with no body', async () => {
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValue(new Response(null, { status: 204 }));
+      global.fetch = fetchMock;
+
+      await client.delete(
+        'https://panel.example.com',
+        '/api/client/servers/abc/backups/uuid-1',
+        'key',
+      );
+
+      const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(options.method).toBe('DELETE');
+      expect(options.body).toBeUndefined();
+    });
+
+    it('returns undefined for a 204 No Content response', async () => {
+      global.fetch = jest.fn().mockResolvedValue(new Response(null, { status: 204 }));
+
+      await expect(
+        client.delete('https://panel.example.com', '/x', 'key'),
+      ).resolves.toBeUndefined();
+    });
+
+    it('validates SSRF before sending a DELETE too', async () => {
+      ssrfMock.assertSafe.mockRejectedValueOnce(new Error('blocked'));
+      global.fetch = jest.fn();
+
+      await expect(
+        client.delete('https://panel.example.com', '/x', 'key'),
+      ).rejects.toThrow('blocked');
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
 });

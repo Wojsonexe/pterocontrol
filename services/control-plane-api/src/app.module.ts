@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AlertsModule } from './alerts/alerts.module';
 import { AuthModule } from './auth/auth.module';
+import { BackupsModule } from './backups/backups.module';
 import { validateEnv } from './config/env.validation';
 import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
@@ -27,6 +28,7 @@ import { TenantsModule } from './tenants/tenants.module';
     ServersModule,
     EventsModule,
     AlertsModule,
+    BackupsModule,
   ],
 })
 export class AppModule {}

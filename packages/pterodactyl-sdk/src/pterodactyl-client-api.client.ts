@@ -17,6 +17,31 @@ export interface PterodactylResourceUsageDto {
 
 export type PterodactylPowerSignal = 'start' | 'stop' | 'restart' | 'kill';
 
+// Field names and shapes follow Pterodactyl's real, publicly documented
+// Client API v1 backup contract (application/vnd.pterodactyl.v1+json) -
+// NOT verified against this repo's own Flutter app, which has no backup
+// implementation at all (its Backups tab is a literal "coming soon"
+// placeholder - see server_detail_screen.dart). Same documented-but-
+// never-hit-a-live-panel limitation as the rest of this SDK - see
+// IMPLEMENTATION_STATUS.md.
+export interface PterodactylBackupDto {
+  uuid: string;
+  name: string;
+  ignoredFiles: string[];
+  sha256Hash: string | null;
+  bytes: number;
+  isSuccessful: boolean;
+  isLocked: boolean;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface CreateBackupOptions {
+  name?: string;
+  ignored?: string;
+  isLocked?: boolean;
+}
+
 interface RawResourceEnvelope {
   attributes: {
     current_state: string;
@@ -43,6 +68,75 @@ function isRawResourceEnvelope(value: unknown): value is RawResourceEnvelope {
     'resources' in attributes &&
     typeof attributes.resources === 'object'
   );
+}
+
+interface RawBackupAttributes {
+  uuid: string;
+  name: string;
+  ignored_files: string[];
+  sha256_hash: string | null;
+  bytes: number;
+  is_successful: boolean;
+  is_locked: boolean;
+  created_at: string;
+  completed_at: string | null;
+}
+
+interface RawBackupEnvelope {
+  attributes: RawBackupAttributes;
+}
+
+interface RawBackupListEnvelope {
+  data: RawBackupEnvelope[];
+}
+
+interface RawSignedUrlEnvelope {
+  attributes: { url: string };
+}
+
+function isRawBackupEnvelope(value: unknown): value is RawBackupEnvelope {
+  if (typeof value !== 'object' || value === null || !('attributes' in value)) {
+    return false;
+  }
+  const { attributes } = value;
+  return (
+    typeof attributes === 'object' &&
+    attributes !== null &&
+    'uuid' in attributes &&
+    'is_successful' in attributes
+  );
+}
+
+function isRawBackupListEnvelope(value: unknown): value is RawBackupListEnvelope {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'data' in value &&
+    Array.isArray(value.data)
+  );
+}
+
+function isRawSignedUrlEnvelope(value: unknown): value is RawSignedUrlEnvelope {
+  if (typeof value !== 'object' || value === null || !('attributes' in value)) {
+    return false;
+  }
+  const { attributes } = value;
+  return typeof attributes === 'object' && attributes !== null && 'url' in attributes;
+}
+
+function toBackupDto(raw: RawBackupEnvelope): PterodactylBackupDto {
+  const { attributes } = raw;
+  return {
+    uuid: attributes.uuid,
+    name: attributes.name,
+    ignoredFiles: attributes.ignored_files,
+    sha256Hash: attributes.sha256_hash,
+    bytes: attributes.bytes,
+    isSuccessful: attributes.is_successful,
+    isLocked: attributes.is_locked,
+    createdAt: attributes.created_at,
+    completedAt: attributes.completed_at,
+  };
 }
 
 /**
@@ -98,5 +192,133 @@ export class PterodactylClientApiClient {
       apiKey,
       { signal },
     );
+  }
+
+  async listBackups(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+  ): Promise<PterodactylBackupDto[]> {
+    const raw = await this.http.get(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/backups`,
+      apiKey,
+    );
+    if (!isRawBackupListEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {data: [{attributes: {...}}]} envelope from the backups list endpoint',
+      );
+    }
+    return raw.data.map(toBackupDto);
+  }
+
+  async createBackup(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    options: CreateBackupOptions = {},
+  ): Promise<PterodactylBackupDto> {
+    const raw = await this.http.post(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/backups`,
+      apiKey,
+      {
+        ...(options.name !== undefined ? { name: options.name } : {}),
+        ...(options.ignored !== undefined ? { ignored: options.ignored } : {}),
+        ...(options.isLocked !== undefined ? { is_locked: options.isLocked } : {}),
+      },
+    );
+    if (!isRawBackupEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {attributes: {...}} envelope from the create-backup endpoint',
+      );
+    }
+    return toBackupDto(raw);
+  }
+
+  async getBackup(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    backupUuid: string,
+  ): Promise<PterodactylBackupDto> {
+    const raw = await this.http.get(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/backups/${backupUuid}`,
+      apiKey,
+    );
+    if (!isRawBackupEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {attributes: {...}} envelope from the backup details endpoint',
+      );
+    }
+    return toBackupDto(raw);
+  }
+
+  async getBackupDownloadUrl(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    backupUuid: string,
+  ): Promise<string> {
+    const raw = await this.http.get(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/backups/${backupUuid}/download`,
+      apiKey,
+    );
+    if (!isRawSignedUrlEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {attributes: {url}} envelope from the backup download endpoint',
+      );
+    }
+    return raw.attributes.url;
+  }
+
+  async deleteBackup(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    backupUuid: string,
+  ): Promise<void> {
+    await this.http.delete(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/backups/${backupUuid}`,
+      apiKey,
+    );
+  }
+
+  async restoreBackup(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    backupUuid: string,
+    truncate = false,
+  ): Promise<void> {
+    await this.http.post(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/backups/${backupUuid}/restore`,
+      apiKey,
+      { truncate },
+    );
+  }
+
+  async toggleBackupLock(
+    baseUrl: string,
+    apiKey: string,
+    serverIdentifier: string,
+    backupUuid: string,
+  ): Promise<PterodactylBackupDto> {
+    const raw = await this.http.post(
+      baseUrl,
+      `/api/client/servers/${serverIdentifier}/backups/${backupUuid}/lock`,
+      apiKey,
+      undefined,
+    );
+    if (!isRawBackupEnvelope(raw)) {
+      throw new PterodactylUnexpectedResponseError(
+        'Expected a {attributes: {...}} envelope from the backup lock endpoint',
+      );
+    }
+    return toBackupDto(raw);
   }
 }
