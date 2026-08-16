@@ -112,11 +112,34 @@ model Server {
   lastSyncedAt    DateTime @default(now())
   createdAt       DateTime @default(now())
 
-  instance PterodactylInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  instance  PterodactylInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  snapshots ResourceSnapshot[]
 
   @@unique([instanceId, pterodactylUuid])
   @@index([tenantId])
   @@index([instanceId])
+}
+
+// One row per observed reading (live GET /resources or, later, the
+// periodic federation-worker collector) - never edited, only inserted.
+// Deliberately no retention/rollup job yet (see IMPLEMENTATION_STATUS.md);
+// this is raw storage, not a pre-aggregated time series.
+model ResourceSnapshot {
+  id                 String   @id @default(uuid())
+  tenantId           String
+  serverId           String
+  observedAt         DateTime @default(now())
+  cpuAbsolutePercent Float?
+  memoryBytes        BigInt?
+  diskBytes          BigInt?
+  networkRxBytes     BigInt?
+  networkTxBytes     BigInt?
+  uptimeMs           BigInt?
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, observedAt])
+  @@index([tenantId, observedAt])
 }
 
 // Append-only. Every privileged action (power actions first; more follow

@@ -5,7 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { CredentialKind, Server } from '@prisma/client';
+import { CredentialKind, ResourceSnapshot, Server } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { EventsService } from '../events/events.service';
 import { InstancesService } from '../instances/instances.service';
@@ -22,6 +22,35 @@ import { SecretsService } from '../secrets/secrets.service';
 export interface ServerFilters {
   instanceId?: string;
   q?: string;
+}
+
+// BigInt fields can't be JSON.stringify'd by Express's default serializer
+// (this crashed as a real 500 in live verification, not a hypothetical) -
+// every BigInt column is stringified before leaving the service.
+export interface ResourceSnapshotDto {
+  id: string;
+  serverId: string;
+  observedAt: Date;
+  cpuAbsolutePercent: number | null;
+  memoryBytes: string | null;
+  diskBytes: string | null;
+  networkRxBytes: string | null;
+  networkTxBytes: string | null;
+  uptimeMs: string | null;
+}
+
+function toSnapshotDto(snapshot: ResourceSnapshot): ResourceSnapshotDto {
+  return {
+    id: snapshot.id,
+    serverId: snapshot.serverId,
+    observedAt: snapshot.observedAt,
+    cpuAbsolutePercent: snapshot.cpuAbsolutePercent,
+    memoryBytes: snapshot.memoryBytes?.toString() ?? null,
+    diskBytes: snapshot.diskBytes?.toString() ?? null,
+    networkRxBytes: snapshot.networkRxBytes?.toString() ?? null,
+    networkTxBytes: snapshot.networkTxBytes?.toString() ?? null,
+    uptimeMs: snapshot.uptimeMs?.toString() ?? null,
+  };
 }
 
 export interface SyncResult {
@@ -154,12 +183,46 @@ export class ServersService {
     const instance = await this.instancesService.findOneForTenant(tenantId, server.instanceId);
     const apiKey = await this.getCredential(instance.id, CredentialKind.CLIENT_API_KEY);
 
+    let usage: PterodactylResourceUsageDto;
     try {
-      return await this.clientApi.getResourceUsage(instance.baseUrl, apiKey, server.identifier);
+      usage = await this.clientApi.getResourceUsage(instance.baseUrl, apiKey, server.identifier);
     } catch (error) {
       const message = error instanceof PterodactylError ? error.message : String(error);
       throw new BadGatewayException(`Could not fetch server resources: ${message}`);
     }
+
+    // Every live look is also a data point - this is the only source of
+    // history until the federation-worker's periodic collector exists
+    // (see IMPLEMENTATION_STATUS.md). A failed clientApi call above never
+    // reaches here, so no snapshot is recorded for a failed read.
+    await this.prisma.resourceSnapshot.create({
+      data: {
+        tenantId,
+        serverId: server.id,
+        cpuAbsolutePercent: usage.cpuAbsolutePercent,
+        memoryBytes: BigInt(Math.round(usage.memoryBytes)),
+        diskBytes: BigInt(Math.round(usage.diskBytes)),
+        networkRxBytes: BigInt(Math.round(usage.networkRxBytes)),
+        networkTxBytes: BigInt(Math.round(usage.networkTxBytes)),
+        uptimeMs: BigInt(Math.round(usage.uptimeMs)),
+      },
+    });
+
+    return usage;
+  }
+
+  async getResourceHistory(
+    tenantId: string,
+    serverId: string,
+    limit = 100,
+  ): Promise<ResourceSnapshotDto[]> {
+    await this.findOneForTenant(tenantId, serverId); // tenant-ownership check
+    const snapshots = await this.prisma.resourceSnapshot.findMany({
+      where: { tenantId, serverId },
+      orderBy: { observedAt: 'desc' },
+      take: Math.min(limit, 500),
+    });
+    return snapshots.map(toSnapshotDto);
   }
 
   async sendPowerAction(

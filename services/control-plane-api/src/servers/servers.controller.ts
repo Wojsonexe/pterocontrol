@@ -14,7 +14,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { AuthenticatedUser } from '../auth/guards/jwt-auth.guard';
 import { PterodactylResourceUsageDto } from '../pterodactyl/pterodactyl-client-api.client';
 import { PowerActionDto } from './dto/power-action.dto';
-import { ServersService, SyncResult } from './servers.service';
+import { ResourceSnapshotDto, ServersService, SyncResult } from './servers.service';
 
 @Controller('servers')
 export class ServersController {
@@ -43,6 +43,19 @@ export class ServersController {
     @Param('id') id: string,
   ): Promise<PterodactylResourceUsageDto> {
     return this.serversService.getResources(user.tenantId, id);
+  }
+
+  @Get(':id/resources/history')
+  getResourceHistory(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+  ): Promise<ResourceSnapshotDto[]> {
+    return this.serversService.getResourceHistory(
+      user.tenantId,
+      id,
+      limit ? Number.parseInt(limit, 10) : undefined,
+    );
   }
 
   @Roles('owner', 'admin')

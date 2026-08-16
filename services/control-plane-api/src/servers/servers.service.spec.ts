@@ -32,6 +32,10 @@ describe('ServersService', () => {
       findMany: jest.fn(),
       findFirst: jest.fn(),
     },
+    resourceSnapshot: {
+      create: jest.fn(),
+      findMany: jest.fn(),
+    },
   };
   const instancesServiceMock = { findOneForTenant: jest.fn() };
   const secretsMock = { decrypt: jest.fn() };
@@ -203,6 +207,17 @@ describe('ServersService', () => {
       expect(clientApiMock.getResourceUsage).not.toHaveBeenCalled();
     });
 
+    const fullUsage = {
+      currentState: 'running',
+      isSuspended: false,
+      cpuAbsolutePercent: 12.5,
+      memoryBytes: 2147483648,
+      diskBytes: 8589934592,
+      networkRxBytes: 1024,
+      networkTxBytes: 2048,
+      uptimeMs: 3600000,
+    };
+
     it('fetches resources using the server identifier, not the internal global id', async () => {
       prismaMock.server.findFirst.mockResolvedValueOnce(server);
       instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
@@ -210,7 +225,8 @@ describe('ServersService', () => {
         ciphertext: Buffer.from('enc'),
       });
       secretsMock.decrypt.mockReturnValueOnce('client-key');
-      clientApiMock.getResourceUsage.mockResolvedValueOnce({ currentState: 'running' });
+      clientApiMock.getResourceUsage.mockResolvedValueOnce(fullUsage);
+      prismaMock.resourceSnapshot.create.mockResolvedValueOnce({});
 
       await service.getResources(tenantId, 'srv-1');
 
@@ -221,7 +237,33 @@ describe('ServersService', () => {
       );
     });
 
-    it('maps a Pterodactyl-side failure to BadGatewayException, not a raw 500', async () => {
+    it('records a ResourceSnapshot on every successful read', async () => {
+      prismaMock.server.findFirst.mockResolvedValueOnce(server);
+      instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
+      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
+        ciphertext: Buffer.from('enc'),
+      });
+      secretsMock.decrypt.mockReturnValueOnce('client-key');
+      clientApiMock.getResourceUsage.mockResolvedValueOnce(fullUsage);
+      prismaMock.resourceSnapshot.create.mockResolvedValueOnce({});
+
+      await service.getResources(tenantId, 'srv-1');
+
+      expect(prismaMock.resourceSnapshot.create).toHaveBeenCalledWith({
+        data: {
+          tenantId,
+          serverId: 'srv-1',
+          cpuAbsolutePercent: 12.5,
+          memoryBytes: BigInt(2147483648),
+          diskBytes: BigInt(8589934592),
+          networkRxBytes: BigInt(1024),
+          networkTxBytes: BigInt(2048),
+          uptimeMs: BigInt(3600000),
+        },
+      });
+    });
+
+    it('maps a Pterodactyl-side failure to BadGatewayException, not a raw 500, and records no snapshot', async () => {
       prismaMock.server.findFirst.mockResolvedValueOnce(server);
       instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
       prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
@@ -235,6 +277,54 @@ describe('ServersService', () => {
       await expect(service.getResources(tenantId, 'srv-1')).rejects.toThrow(
         BadGatewayException,
       );
+      expect(prismaMock.resourceSnapshot.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getResourceHistory', () => {
+    it('checks tenant ownership before querying snapshots', async () => {
+      prismaMock.server.findFirst.mockResolvedValueOnce(null);
+
+      await expect(
+        service.getResourceHistory('other-tenant', 'srv-1'),
+      ).rejects.toThrow(NotFoundException);
+      expect(prismaMock.resourceSnapshot.findMany).not.toHaveBeenCalled();
+    });
+
+    it('caps the limit at 500 regardless of what is requested', async () => {
+      prismaMock.server.findFirst.mockResolvedValueOnce({ id: 'srv-1', tenantId });
+      prismaMock.resourceSnapshot.findMany.mockResolvedValueOnce([]);
+
+      await service.getResourceHistory(tenantId, 'srv-1', 10000);
+
+      expect(prismaMock.resourceSnapshot.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 500 }),
+      );
+    });
+
+    it('converts every BigInt column to a string (regression: raw BigInt crashes JSON.stringify)', async () => {
+      prismaMock.server.findFirst.mockResolvedValueOnce({ id: 'srv-1', tenantId });
+      prismaMock.resourceSnapshot.findMany.mockResolvedValueOnce([
+        {
+          id: 'snap-1',
+          serverId: 'srv-1',
+          observedAt: new Date('2026-01-01T00:00:00Z'),
+          cpuAbsolutePercent: 12.5,
+          memoryBytes: BigInt(2147483648),
+          diskBytes: BigInt(8589934592),
+          networkRxBytes: BigInt(1024),
+          networkTxBytes: BigInt(2048),
+          uptimeMs: BigInt(3600000),
+        },
+      ]);
+
+      const result = await service.getResourceHistory(tenantId, 'srv-1');
+
+      expect(result[0].memoryBytes).toBe('2147483648');
+      expect(result[0].diskBytes).toBe('8589934592');
+      expect(typeof result[0].memoryBytes).toBe('string');
+      // The real regression: this must not throw.
+      expect(() => JSON.stringify(result)).not.toThrow();
     });
   });
 
