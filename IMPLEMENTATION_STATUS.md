@@ -1,13 +1,13 @@
 # Pterocontrol Control Plane — stan implementacji
 
-Ostatnia aktualizacja: 2026-08-16, branch `feature/control-plane-mvp`, ostatni commit `98225bd`.
+Ostatnia aktualizacja: 2026-08-16, branch `feature/control-plane-mvp`, ostatni commit `fbb2fc6`.
 
 Dokument-punkt-kontrolny w trybie autonomicznej implementacji. Kolejna sesja: przeczytaj to w całości, potem kontynuuj od sekcji "Następny konkretny krok" — nie projektuj architektury od nowa, jest już ustalona i częściowo zaimplementowana.
 
 ## Co zostało wykonane (real, przetestowane, zweryfikowane end-to-end)
 
 ### FAZA 0 — Audyt
-Repo to Flutter (`lib/`, `android/`, `ios/`, `test/`, korzeń repo) + backend obok (`services/control-plane-api`, `infra/`). Flutter nietknięty przez cały czas trwania tej sesji.
+Repo to Flutter (`lib/`, `android/`, `ios/`, `test/`, korzeń repo) + backend obok (`services/control-plane-api`, `infra/`). Flutter nietknięty przez fazy 1-8 (backend); od "Flutter — tryb Control Plane" (patrz niżej) świadomie odblokowany na wyraźne potwierdzenie użytkownika, patrz ta sekcja.
 
 ### FAZA 1 — Foundation
 - `ConfigModule.forRoot({ validate: validateEnv })` — fail-fast przy starcie.
@@ -140,13 +140,18 @@ Repo to Flutter (`lib/`, `android/`, `ios/`, `test/`, korzeń repo) + backend ob
 ## Stan testów
 
 ```
-323 testy łącznie, wszystkie przechodzą
+Backend: 323 testy łącznie, wszystkie przechodzą
   (158 control-plane-api + 65 federation-worker + 75 pterodactyl-sdk + 22 rabbitmq + 3 secrets)
 npm run typecheck  -> czysty (wszystkie 5 workspace'ów)
 npm run lint        -> czysty (wszystkie 5 workspace'ów)
+
+Flutter: 423 testy łącznie, wszystkie przechodzą (393 istniejące + 30 nowych dla control_plane)
+flutter analyze -> czysty
 ```
 
-Uruchom: `cd "E:\Projekty\pterodactyl-analysis\mobile" && npm run typecheck --workspaces --if-present && npm run lint --workspaces --if-present && npm run test --workspaces --if-present`
+Uruchom backend: `cd "E:\Projekty\pterodactyl-analysis\mobile" && npm run typecheck --workspaces --if-present && npm run lint --workspaces --if-present && npm run test --workspaces --if-present`
+
+Uruchom Flutter: `cd "E:\Projekty\pterodactyl-analysis\mobile" && flutter analyze && flutter test`
 
 ## Jak uruchomić lokalnie
 
@@ -170,7 +175,8 @@ npm run start:dev
 - **Kontrakt API dla Backups, Server Configuration, Schedules, Allocations, Server Databases i Activity nie jest zweryfikowany względem Flutter/istniejącego kodu** — pochodzi z ogólnej wiedzy o publicznym Pterodactyl Client API v1, nie z lokalnego źródła prawdy (jawnie zaznaczone w kodzie i wyżej, potwierdzone za każdym razem dedykowanym przeszukaniem `lib/`).
 - **`sql-guard.ts` to pragmatyczny keyword/shape guard, nie pełny parser SQL** — łapie stacked statements i słowa kluczowe DDL, ale nie każde możliwe nadużycie surowego SQL (np. nie ma ochrony przed kosztownym `SELECT` bez `WHERE`/`LIMIT` na dużej tabeli poza obcięciem wyniku po fakcie). Zaakceptowane ryzyko dla uwierzytelnionego `owner`/`admin`, opisane wyżej.
 - **Database Gateway obcina wynik `SELECT` po stronie aplikacji, po zbuforowaniu przez driver** — nie jest to prawdziwy streaming cursor z twardym limitem pamięci; bardzo duży niezaobcięty `SELECT` nadal kosztuje pamięć przed obcięciem do 500 wierszy.
-- **Nic z Database Gateway wzwyż nie istnieje**: Mobile client (tryb Control Plane), Security hardening review, pełne testy integracyjne/E2E, produkcyjny deployment (Prometheus/Grafana/Traefik/TLS).
+- **Flutter Control Plane mode ma tylko login+lista serwerów+zasoby+power** — brak konsoli/plików/backupów/harmonogramów/alertów/notyfikacji/baz danych z poziomu apki (wszystkie te moduły istnieją na backendzie, ale nie mają jeszcze ekranu we Flutterze). Brak odświeżania tokenu — backend nie ma endpointu refresh, token wygasa po 15 min i użytkownik musi się zalogować ponownie (`401` poprawnie obsłużony, nie crash).
+- **Nic z Flutter Control Plane mode wzwyż nie istnieje**: Security hardening review, pełne testy integracyjne/E2E, produkcyjny deployment (Prometheus/Grafana/Traefik/TLS).
 - **`infra/docker-compose.yml` wystawia RabbitMQ Management UI na `0.0.0.0:15672`** — akceptowalne dla lokalnego dev, ale mandat RabbitMQ wymaga wprost, żeby nigdy nie było to publicznie dostępne w produkcji; do naprawienia w fazie production/deployment (osobny compose/profil, port bindowany tylko na localhost albo VPN).
 
 ## Znane ograniczenia środowiska (nie kod, ale warte zapisania)
@@ -178,33 +184,30 @@ npm run start:dev
 - Ta maszyna (Windows, gdzie ta sesja pracowała) ma inne, niezwiązane projekty zajmujące standardowe porty Dockera (5432/6379). Każda weryfikacja live używała tymczasowych, jednorazowych kontenerów na innych portach (5442-5447), zawsze sprzątanych po weryfikacji. `infra/docker-compose.yml` zakłada standardowe porty — na tej maszynie do lokalnego developmentu trzeba by je zremapować (lokalna specyfika, nie coś do zmiany w repo).
 - **Brak dostępu do prawdziwej instancji Pterodactyla.** Cała weryfikacja Federation Layer jest zweryfikowana jednostkowo (mockowany `fetch`/DNS) i/lub realnym ruchem sieciowym do `https://example.com` (prawdziwe DNS/TCP/TLS/HTTP, ale nie prawdziwy Pterodactyl) i/lub ręcznie wstawionymi rekordami DB. Kod jest napisany zgodnie z ogólnie znanym, publicznie udokumentowanym kontraktem Pterodactyl Client/Application API v1 — **nie** zweryfikowanym względem istniejącej apki Flutter (ta w ogóle nie implementuje większości tych funkcji, potwierdzone przeszukaniem `lib/`) ani względem żywego panelu Pterodactyla, do którego nie ma dostępu w tym środowisku.
 
+### Flutter — tryb Control Plane w istniejącej aplikacji (punkt 9)
+- **Rozstrzygnięty konflikt instrukcji**: stara zasada "nigdy nie dotykaj `lib/`" chroniła Fluttera wyłącznie podczas faz backendowych (1-8) — zapytany wprost (`AskUserQuestion`), użytkownik potwierdził, że punkt 9 świadomie ją znosi.
+- **Druga decyzja od użytkownika w tej fazie**: jak Control Plane wpasować w istniejący, głęboko jedno-instancyjny model apki (`RootScreen` → jeden shell z bottom-nav, każdy ekran pod `/app/...` zakłada bezpośrednie połączenie z jednym panelem Pterodactyla — API key, numeryczne ID serwera, własny WebSocket do konsoli/plików, których Control Plane w ogóle jeszcze nie ma). Użytkownik wybrał **osobny, równoległy tryb** (nie unifikację z `PterodactylInstance`) — najmniejsze ryzyko regresji na już działającym, wysyłanym kodzie Pterodactyl-direct.
+- Nowy moduł `lib/features/control_plane/` (`domain/data/application/presentation`, dokładnie ten sam wzorzec warstw co istniejące feature'y):
+  - `ControlPlaneApiClient`/`ControlPlaneApiClientFactory` — lżejszy odpowiednik `core/network/pterodactyl_api_client.dart` (ten sam `Result`/`AppException`/`ApiExceptionMapper`, ten sam `AuthInterceptor`, tylko `get`/`post` — bez upload/download, których Control Plane nie ma).
+  - `ControlPlaneAuthApi.login()` — `POST /auth/login`, realny kontrakt zbudowany w tej samej sesji, nie zgadywany. `tenantId` dekodowany lokalnie z payloadu JWT (`jwt_payload.dart`, ~15 linii, bez nowej zależności — backend nie zwraca `tenantId` jako osobnego pola).
+  - `ControlPlaneServersApi` — `list()`/`getResources()`/`sendPowerAction()`, pokrywa `GET /servers`, `GET /servers/:id/resources`, `POST /servers/:id/power`.
+  - `ControlPlaneSessionController`/`ControlPlaneServersController`/`ControlPlanePowerActionController` — `AsyncNotifier`, ten sam wzorzec co `InstanceListController`/`ServerPowerActionController`.
+  - Świadomie brak samodzielnej rejestracji konta w UI — tworzenie tenanta jest wewnętrzną operacją bootstrap gated przez `BOOTSTRAP_TOKEN` po stronie backendu, nie publicznym signupem.
+  - Nowe trasy pod istniejącym shellem Ustawień: `/app/settings/control-plane` i `.../servers/:serverId`, nowy kafelek "Konto Control Plane" w `SettingsScreen` — **jedyne dwie zmiany w plikach spoza nowego katalogu** (routing + jeden kafelek); zero zmian w `lib/features/instances`, `lib/features/servers`, czy istniejącym shellu.
+- Zweryfikowane REALNIE na Androidzie (`emulator-5554`, prawdziwy `flutter run`, sterowanie przez `adb` ekran po ekranie, nie tylko `flutter analyze`): tymczasowy Postgres+RabbitMQ, realny proces `control-plane-api`, prawdziwy tenant zabootstrapowany przez API, prawdziwy serwer wstawiony przez Prisma. Realne logowanie (prawdziwy `POST /auth/login`, prawdziwy JWT, realne dekodowanie `tenantId`) → lista serwerów pokazała dokładnie zaseedowany "Flutter Smoke Server" (Node 1, `d3aacfls`) pobrany żywym zapytaniem HTTP z emulatora do hosta (`10.0.2.2`). Ekran szczegółów serwera poprawnie pokazał `ErrorView` z komunikatem "Serwer zwrócił nieoczekiwany błąd." — potwierdzone bezpośrednim `curl`, że to faktyczny, oczekiwany `400` z backendu (`"Instance has no CLIENT_API_KEY credential configured"`, bo seed celowo nie tworzył poświadczenia) — honest error path działa end-to-end, nie tylko happy path. Do testu wejścia do wizarda "Dodaj panel" (wymaganego, żeby w ogóle wejść do shellu) użyto `https://httpbin.org/anything` — realny, publiczny endpoint zwracający `200` dla dowolnej pod-ścieżki, więc test połączenia wizarda przeszedł bez fabrykowania fałszywego wyniku.
+- Testy: 30 nowych (`jwt_payload`, `ControlPlaneApiClient`, `ControlPlaneAuthApi`, `ControlPlaneServersApi`, `ControlPlaneUrlValidator`, `ControlPlaneSessionController`, `ControlPlaneServersController`, `ControlPlanePowerActionController`) — wszystkie przez istniejący `test/support/fake_http_client_adapter.dart` (realny transport-level fake, nie mock zachowania). 423 testy łącznie w apce Flutter, wszystkie przechodzą, `flutter analyze` czysty.
+- Świadomie NIEkompletne w tym MVP-slice'ie: brak konsoli/plików/backupów/harmonogramów/baz danych z poziomu Control Plane (tylko login+lista+zasoby+power); brak odświeżania tokenu (backend nie ma jeszcze endpointu refresh — token wygasa po 15 min, `401` poprawnie mapowany na `UnauthorizedException`, użytkownik musi się zalogować ponownie).
+
 ## Następny konkretny krok
 
-**Flutter — tryb Control Plane w istniejącej aplikacji** (punkt 9 z listy uzgodnionej z użytkownikiem).
+**Security review** (punkt 10 z listy uzgodnionej z użytkownikiem).
 
-**Rozstrzygnięty konflikt instrukcji**: sesja miała wcześniej stałą zasadę "nigdy nie dotykaj `lib/`, `android/`, `ios/`, `test/`, `pubspec.yaml`". Zapytany wprost, użytkownik potwierdził, że ta zasada chroniła Fluttera wyłącznie podczas faz backendowych (1-8), żeby uniknąć przypadkowego scope creep — punkt 9 świadomie ją znosi. Zmiany w `lib/` są teraz autoryzowane, pod warunkiem trzymania się istniejącej architektury aplikacji (nie przepisywać, dobudowywać).
+Zacząć od przeglądu tego, co już zostało zbudowane pod kątem bezpieczeństwa, zamiast zakładać z góry listę kontroli — konkretne obszary do sprawdzenia na podstawie tego, co faktycznie istnieje w kodzie:
+1. **SSRF** (`SsrfValidatorService`) — czy DNS-rebinding-defense (podwójna rezolucja) nadal działa poprawnie po wszystkich zmianach tej sesji; czy każde nowe miejsce przyjmujące URL od użytkownika (żadne nowe od Alert Engine wzwyż tego nie robiło, ale zweryfikować) faktycznie przez nią przechodzi.
+2. **RBAC** — `RolesGuard` jest jednostkowo przetestowany, ale (patrz "Świadomie NIEkompletne") nigdy nie było żywego requestu z rolą inną niż `owner` (bootstrap tworzy tylko `owner`). Sprawdzić, czy któryś z nowo dobudowanych modułów (Database Gateway zwłaszcza — surowy SQL) ma poprawnie ograniczone `@Roles(...)`.
+3. **Database Gateway** — to najbardziej ryzykowny nowy komponent tej sesji (surowy SQL, hasło bazy trwale przechowywane). Przejrzeć pod kątem: czy `sql-guard.ts` da się obejść (np. komentarze SQL `/* */` maskujące słowo kluczowe, wielkość liter już objęta), czy `MySqlConnectionFactory` poprawnie zamyka połączenia przy każdym błędzie (wyciek połączeń = DoS na bazę node'a).
+4. **Sekrety** — czy `SECRETS_MASTER_KEY`/`JWT_SECRET`/`BOOTSTRAP_TOKEN` faktycznie nigdzie nie trafiają do logów (ten wzorzec pilnowany ręcznie przy każdej fazie, ale warto jednego przebiegu grep po całym `src/` na słowo `console.log`/`logger` obok zmiennych sekretów).
+5. **`infra/docker-compose.yml` wystawia RabbitMQ Management UI na `0.0.0.0:15672`** — już wcześniej zidentyfikowane, do naprawienia tutaj albo w fazie production/deployment.
+6. **Zależności** — `npm audit` na wszystkich 5 workspace'ów backendu i `flutter pub outdated`/znane CVE dla zależności Fluttera (w tym nowej `mysql2`).
 
-**Zwiad architektury Fluttera** (dedykowany agent Explore, read-only, przed jakąkolwiek decyzją projektową — ta sama dyscyplina co przy każdej wcześniejszej fazie):
-- Wejście: `lib/main.dart` → `PterodactylMobileApp` (`lib/app/app.dart`), `MaterialApp.router`. Routing: **go_router** (`lib/app/router/app_router.dart`) — `StatefulShellRoute.indexedStack` z czterema gałęziami (Dashboard/Servers/Activity/Settings) pod `AppShell`. Stan: **Riverpod** wszędzie, zero Provider/Bloc/GetX.
-- Struktura feature'ów: `lib/features/{authentication,instances,servers,console,files,dashboard,activity,settings}/` w warstwach `domain/data/application/presentation` + `lib/core/` (network, theme, storage, error, widgets).
-- Istniejący klient HTTP: **Dio**, budowany per-instance przez `PterodactylApiClientFactory.createFor({baseUrl, authTokenProvider})` (`lib/core/network/`), z `AuthInterceptor` i debug-only `LogInterceptor` (celowo nie loguje headerów/body, żeby nie wyciekł token).
-- Model wielo-instancyjny już istnieje: `PterodactylInstance` (`lib/features/instances/domain/pterodactyl_instance.dart`) ma własny `baseUrl`; każda instancja ma osobny wpis w `SecureCredentialStorage` (`flutter_secure_storage`, klucz `credentials.$instanceId`, dziś tylko pojedynczy `apiKey` — brak pojęcia tokenu/sesji). **Brak dyskryminatora "rodzaju" instancji** — dziś zakłada się Pterodactyl.
-- Wzorzec placeholderów: `ComingSoonView` (`lib/core/presentation/widgets/coming_soon_view.dart`) używany m.in. w zakładce Backups `server_detail_screen.dart`, `activity_screen.dart`, `security_settings_screen.dart`, `account_settings_screen.dart`; zakładka Startup/Environment w `server_detail_screen.dart` ma osobny, lokalny placeholder (`_SettingsSectionPlaceholder`).
-- Zależności już w `pubspec.yaml` nadające się do reużycia: `dio`, `flutter_secure_storage`, `shared_preferences`, `web_socket_channel`, `go_router`, `flutter_riverpod` — nic nowego nie powinno być potrzebne na start.
-
-**Kluczowa decyzja projektowa do podjęcia PRZED pisaniem kodu** (nie zgadywać, ale to decyzja techniczna wynikająca wprost z istniejącej architektury, nie business/security decyzja wymagająca użytkownika): jak Control Plane wpasowuje się w istniejący model wielo-instancyjny. Dwie opcje:
-1. Rozszerzyć `PterodactylInstance` o dyskryminator rodzaju (`PTERODACTYL_DIRECT` / `CONTROL_PLANE`) i ujednolicić listę serwerów pod jednym UI.
-2. Osobna, równoległa sekcja/gałąź nawigacji "Control Plane" z własnym auth (JWT), własnym wpisem w secure storage, własnym Dio-klientem wskazującym na `control-plane-api` zamiast panelu Pterodactyla bezpośrednio.
-Rekomendacja robocza: opcja 2 na start (mniejszy blast radius na istniejący, działający kod Pterodactyl-direct; Control Plane API ma inny kształt danych — global server id, JWT zamiast API key, multi-tenant — więc "ujednolicenie" byłoby przedwczesną abstrakcją). Zweryfikować przy pisaniu pierwszego ekranu, czy to się faktycznie broni.
-
-**Kontrakt API do wdrożenia jest już znany na pewno** (napisany w tej samej sesji, nie trzeba zgadywać ani przeszukiwać Fluttera): `POST /tenants` (bootstrap), `POST /auth/login` (JWT), `GET /servers`, `GET /servers/:id`, `GET /servers/:id/resources[/history]`, `POST /servers/:id/power`, plus wszystkie moduły per-serwerowe zbudowane w tej sesji (alerts, notifications, backups, startup, schedules, allocations, databases, activity, database gateway).
-
-**Zakres pierwszego, wąskiego MVP-slice'a** (mirror sposobu, w jaki budowany był sam backend — przyrostowo, nie wszystko naraz):
-1. Ekran logowania Control Plane (JWT) + bezpieczne przechowanie tokenu (nowy wpis w `SecureCredentialStorage` lub analogiczny mechanizm, rozszerzenie modelu credentiali o token zamiast/obok `apiKey`).
-2. Lista serwerów z `GET /servers` (global model, nie per-instance Pterodactyl).
-3. Ekran szczegółów serwera: zasoby (`GET /servers/:id/resources`) + power control (`POST /servers/:id/power`) — odpowiednik już istniejących ekranów Pterodactyl-direct, ale wpięty w nowy backend.
-4. Dopiero potem: kolejne moduły (alerts/notifications/backups/itd.) jako kolejne przyrosty, każdy z realną weryfikacją (uruchomiony backend + emulator/urządzenie, nie tylko `flutter analyze`).
-
-Testy: istniejący `test/` używa jakiego frameworka/wzorca — **do sprawdzenia na starcie tej fazy** (nie zakładać, sprawdzić realnie, tak jak zawsze w tej sesji), potem dopisać analogiczne testy dla nowych ekranów/providerów.
-
-Po tej fazie: security review → testy E2E → production/deployment, zgodnie z listą uzgodnioną z użytkownikiem. Kontynuować autonomicznie, bez zatrzymywania się na potwierdzenie między etapami, chyba że pojawi się jeden z 5 dozwolonych warunków przerwania z mandatu tej sesji.
+Po tej fazie: testy E2E → production/deployment, zgodnie z listą uzgodnioną z użytkownikiem. Kontynuować autonomicznie, bez zatrzymywania się na potwierdzenie między etapami, chyba że pojawi się jeden z 5 dozwolonych warunków przerwania z mandatu tej sesji.
