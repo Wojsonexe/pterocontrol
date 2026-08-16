@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AuthModule } from './auth/auth.module';
 import { validateEnv } from './config/env.validation';
+import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
 import { InstancesModule } from './instances/instances.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -19,6 +20,7 @@ import { TenantsModule } from './tenants/tenants.module';
     TenantsModule,
     InstancesModule,
     ServersModule,
+    EventsModule,
   ],
 })
 export class AppModule {}

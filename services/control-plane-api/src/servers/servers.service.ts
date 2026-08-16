@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { CredentialKind, Server } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
+import { EventsService } from '../events/events.service';
 import { InstancesService } from '../instances/instances.service';
 import { PterodactylApplicationApiClient } from '../pterodactyl/pterodactyl-application-api.client';
 import {
@@ -48,6 +49,7 @@ export class ServersService {
     private readonly applicationApi: PterodactylApplicationApiClient,
     private readonly clientApi: PterodactylClientApiClient,
     private readonly auditService: AuditService,
+    private readonly eventsService: EventsService,
   ) {}
 
   async syncInstance(tenantId: string, instanceId: string): Promise<SyncResult> {
@@ -70,11 +72,20 @@ export class ServersService {
       throw new BadGatewayException(`Could not sync servers from instance: ${message}`);
     }
 
+    const existingUuids = new Set(
+      (
+        await this.prisma.server.findMany({
+          where: { instanceId: instance.id },
+          select: { pterodactylUuid: true },
+        })
+      ).map((s) => s.pterodactylUuid),
+    );
+
     for (const remote of remoteServers) {
       // Mapping local -> global: (instanceId, pterodactylUuid) is the
       // natural key, never the bare Pterodactyl numeric id (not unique
       // across independent installs) - matches docs/architecture §2.
-      await this.prisma.server.upsert({
+      const saved = await this.prisma.server.upsert({
         where: {
           instanceId_pterodactylUuid: {
             instanceId: instance.id,
@@ -98,6 +109,17 @@ export class ServersService {
           nodeId: remote.node,
         },
       });
+
+      if (!existingUuids.has(remote.uuid)) {
+        await this.eventsService.record({
+          tenantId,
+          instanceId: instance.id,
+          serverId: saved.id,
+          type: 'server_created',
+          payload: { name: remote.name, identifier: remote.identifier },
+          dedupKey: `server_created:${instance.id}:${remote.uuid}`,
+        });
+      }
     }
 
     this.logger.log(

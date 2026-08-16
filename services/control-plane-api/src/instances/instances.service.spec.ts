@@ -1,5 +1,6 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { CredentialKind, InstanceStatus } from '@prisma/client';
+import { EventsService } from '../events/events.service';
 import { PterodactylApplicationApiClient } from '../pterodactyl/pterodactyl-application-api.client';
 import { PterodactylAuthError } from '../pterodactyl/pterodactyl-http.client';
 import { SsrfValidatorService } from '../pterodactyl/ssrf-validator.service';
@@ -28,6 +29,7 @@ describe('InstancesService', () => {
   const ssrfMock = { assertSafe: jest.fn() };
   const secretsMock = { encrypt: jest.fn(), decrypt: jest.fn() };
   const applicationApiMock = { testConnection: jest.fn() };
+  const eventsServiceMock = { record: jest.fn() };
 
   let service: InstancesService;
 
@@ -46,6 +48,7 @@ describe('InstancesService', () => {
       ssrfMock as unknown as SsrfValidatorService,
       secretsMock as unknown as SecretsService,
       applicationApiMock as unknown as PterodactylApplicationApiClient,
+      eventsServiceMock as unknown as EventsService,
     );
   });
 
@@ -72,7 +75,10 @@ describe('InstancesService', () => {
 
     it('encrypts both keys, stores them, then marks ONLINE on a successful connectivity test', async () => {
       ssrfMock.assertSafe.mockResolvedValue(undefined);
-      prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce(null);
+      prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce(null); // duplicate check
+      prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce({
+        status: InstanceStatus.PENDING_SYNC,
+      }); // testAndUpdateStatus's "previous status" lookup
       secretsMock.encrypt.mockImplementation((s: string) => Buffer.from(`enc(${s})`));
 
       const created = { id: 'inst-1', tenantId, name: dto.name, baseUrl: dto.baseUrl };
@@ -112,11 +118,20 @@ describe('InstancesService', () => {
       const updateArgs = prismaMock.pterodactylInstance.update.mock.calls[0][0];
       expect(updateArgs.data.status).toBe(InstanceStatus.ONLINE);
       expect(result.status).toBe(InstanceStatus.ONLINE);
+      expect(eventsServiceMock.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'instance_status_changed',
+          payload: { from: InstanceStatus.PENDING_SYNC, to: InstanceStatus.ONLINE },
+        }),
+      );
     });
 
     it('still saves the instance but marks UNREACHABLE with lastError when connectivity fails', async () => {
       ssrfMock.assertSafe.mockResolvedValue(undefined);
-      prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce(null);
+      prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce(null); // duplicate check
+      prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce({
+        status: InstanceStatus.PENDING_SYNC,
+      }); // testAndUpdateStatus's "previous status" lookup
       secretsMock.encrypt.mockReturnValue(Buffer.from('enc'));
 
       const created = { id: 'inst-1', tenantId, name: dto.name, baseUrl: dto.baseUrl };
@@ -197,6 +212,9 @@ describe('InstancesService', () => {
       prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
         ciphertext: Buffer.from('enc'),
       });
+      prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce({
+        status: InstanceStatus.UNREACHABLE,
+      }); // testAndUpdateStatus's "previous status" lookup
       secretsMock.decrypt.mockReturnValueOnce('decrypted-key');
       ssrfMock.assertSafe.mockResolvedValueOnce(undefined);
       applicationApiMock.testConnection.mockResolvedValueOnce(undefined);

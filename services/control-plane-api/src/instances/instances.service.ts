@@ -9,6 +9,7 @@ import {
   InstanceStatus,
   PterodactylInstance,
 } from '@prisma/client';
+import { EventsService } from '../events/events.service';
 import { PterodactylApplicationApiClient } from '../pterodactyl/pterodactyl-application-api.client';
 import { PterodactylError } from '../pterodactyl/pterodactyl-http.client';
 import { SsrfValidatorService } from '../pterodactyl/ssrf-validator.service';
@@ -32,6 +33,7 @@ export class InstancesService {
     private readonly ssrfValidator: SsrfValidatorService,
     private readonly secrets: SecretsService,
     private readonly applicationApi: PterodactylApplicationApiClient,
+    private readonly eventsService: EventsService,
   ) {}
 
   async create(
@@ -145,6 +147,13 @@ export class InstancesService {
     baseUrl: string,
     applicationApiKey: string,
   ): Promise<PterodactylInstance> {
+    const before = await this.prisma.pterodactylInstance.findUnique({
+      where: { id: instanceId },
+      select: { status: true },
+    });
+    const previousStatus = before?.status ?? null;
+
+    let updated: PterodactylInstance;
     try {
       // Re-validated immediately before the actual outbound call, even
       // though create()/resync() already checked it moments earlier -
@@ -152,7 +161,7 @@ export class InstancesService {
       await this.ssrfValidator.assertSafe(baseUrl);
       await this.applicationApi.testConnection(baseUrl, applicationApiKey);
 
-      return this.prisma.pterodactylInstance.update({
+      updated = await this.prisma.pterodactylInstance.update({
         where: { id: instanceId },
         data: {
           status: InstanceStatus.ONLINE,
@@ -169,10 +178,23 @@ export class InstancesService {
         `Instance ${instanceId} (tenant ${tenantId}) connectivity test failed: ${message}`,
       );
 
-      return this.prisma.pterodactylInstance.update({
+      updated = await this.prisma.pterodactylInstance.update({
         where: { id: instanceId },
         data: { status: InstanceStatus.UNREACHABLE, lastError: message },
       });
     }
+
+    if (previousStatus !== null && previousStatus !== updated.status) {
+      const occurredAtBucket = Date.now();
+      await this.eventsService.record({
+        tenantId,
+        instanceId,
+        type: 'instance_status_changed',
+        payload: { from: previousStatus, to: updated.status },
+        dedupKey: `instance_status_changed:${instanceId}:${previousStatus}->${updated.status}:${occurredAtBucket}`,
+      });
+    }
+
+    return updated;
   }
 }

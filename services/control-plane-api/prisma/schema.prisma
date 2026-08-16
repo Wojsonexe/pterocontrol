@@ -135,3 +135,21 @@ model AuditLog {
 
   @@index([tenantId, at])
 }
+
+// "What happened" (system-observed, e.g. detected during a sync) - distinct
+// from AuditLog ("who did what", operator-initiated actions). dedupKey has a
+// unique constraint: EventsService.record() treats a P2002 violation on it
+// as successful idempotent no-op, not an error - the same real transition
+// observed twice (e.g. an overlapping sync retry) must not create two rows.
+model Event {
+  id         String   @id @default(uuid())
+  tenantId   String
+  instanceId String?
+  serverId   String?
+  type       String // instance_status_changed | server_created
+  payload    Json
+  occurredAt DateTime @default(now())
+  dedupKey   String   @unique
+
+  @@index([tenantId, occurredAt])
+}

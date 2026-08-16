@@ -1,5 +1,6 @@
 import { BadGatewayException, BadRequestException, NotFoundException } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service';
+import { EventsService } from '../events/events.service';
 import { InstancesService } from '../instances/instances.service';
 import { PterodactylApplicationApiClient } from '../pterodactyl/pterodactyl-application-api.client';
 import { PterodactylClientApiClient } from '../pterodactyl/pterodactyl-client-api.client';
@@ -37,6 +38,7 @@ describe('ServersService', () => {
   const applicationApiMock = { listServers: jest.fn() };
   const clientApiMock = { getResourceUsage: jest.fn(), sendPowerAction: jest.fn() };
   const auditServiceMock = { record: jest.fn<Promise<void>, [AuditRecordArgs]>() };
+  const eventsServiceMock = { record: jest.fn() };
 
   let service: ServersService;
   const tenantId = 't-1';
@@ -51,6 +53,7 @@ describe('ServersService', () => {
       applicationApiMock as unknown as PterodactylApplicationApiClient,
       clientApiMock as unknown as PterodactylClientApiClient,
       auditServiceMock as unknown as AuditService,
+      eventsServiceMock as unknown as EventsService,
     );
   });
 
@@ -106,7 +109,10 @@ describe('ServersService', () => {
         { id: 5, uuid: 'uuid-5', identifier: 'd5', name: 'Survival', node: 1 },
         { id: 6, uuid: 'uuid-6', identifier: 'd6', name: 'Creative', node: 1 },
       ]);
-      prismaMock.server.upsert.mockResolvedValue({});
+      prismaMock.server.findMany.mockResolvedValueOnce([]); // no pre-existing servers - both are new
+      prismaMock.server.upsert
+        .mockResolvedValueOnce({ id: 'srv-5' })
+        .mockResolvedValueOnce({ id: 'srv-6' });
 
       const result = await service.syncInstance(tenantId, 'inst-1');
 
@@ -123,6 +129,27 @@ describe('ServersService', () => {
       expect(firstCallArgs.create.pterodactylUuid).toBe('uuid-5');
       expect(firstCallArgs.create.name).toBe('Survival');
       expect(result).toEqual({ synced: 2 });
+      expect(eventsServiceMock.record).toHaveBeenCalledTimes(2);
+      expect(eventsServiceMock.record).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'server_created', serverId: 'srv-5' }),
+      );
+    });
+
+    it('does not emit server_created for a server that was already known', async () => {
+      instancesServiceMock.findOneForTenant.mockResolvedValueOnce(instance);
+      prismaMock.instanceCredential.findUnique.mockResolvedValueOnce({
+        ciphertext: Buffer.from('enc'),
+      });
+      secretsMock.decrypt.mockReturnValueOnce('decrypted-key');
+      applicationApiMock.listServers.mockResolvedValueOnce([
+        { id: 5, uuid: 'uuid-5', identifier: 'd5', name: 'Survival', node: 1 },
+      ]);
+      prismaMock.server.findMany.mockResolvedValueOnce([{ pterodactylUuid: 'uuid-5' }]);
+      prismaMock.server.upsert.mockResolvedValueOnce({ id: 'srv-5' });
+
+      await service.syncInstance(tenantId, 'inst-1');
+
+      expect(eventsServiceMock.record).not.toHaveBeenCalled();
     });
   });
 
