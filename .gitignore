@@ -67,3 +67,7 @@ dist/
 coverage/
 *.tsbuildinfo
 npm-debug.log*
+
+# .env.* wyżej w tym pliku łapie też .env.example — to jedyny świadomy
+# wyjątek: .env.example to bezpieczny, commitowany szablon bez sekretów.
+!**/.env.example
