@@ -101,6 +101,12 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN}
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      # Optional - unset means empty string means SsrfValidatorService
+      # trusts nothing extra, today's exact strict behavior. `.env.prod`
+      # values are NOT auto-injected into a container's environment;
+      # they only take effect where explicitly referenced with ${...}
+      # here, which is why this line has to exist at all.
+      TRUSTED_PTERODACTYL_ORIGINS: ${TRUSTED_PTERODACTYL_ORIGINS:-}
       NODE_ENV: production
     depends_on:
       postgres:
@@ -130,6 +136,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
       SECRETS_MASTER_KEY: ${SECRETS_MASTER_KEY}
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      # Must match control-plane-api's value exactly - see that
+      # service's own comment on this same var above.
+      TRUSTED_PTERODACTYL_ORIGINS: ${TRUSTED_PTERODACTYL_ORIGINS:-}
       NODE_ENV: production
     depends_on:
       postgres:
