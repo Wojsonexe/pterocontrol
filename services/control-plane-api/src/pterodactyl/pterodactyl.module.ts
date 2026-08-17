@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import {
+  parseTrustedOrigins,
   PterodactylApplicationApiClient,
   PterodactylClientApiClient,
   PterodactylHttpClient,
@@ -16,7 +17,19 @@ import {
  */
 @Module({
   providers: [
-    SsrfValidatorService,
+    {
+      provide: SsrfValidatorService,
+      // process.env directly, not ConfigService: this module (and the
+      // shared @pterocontrol/pterodactyl-sdk package it wires up) has no
+      // dependency on @nestjs/config today, and one env var doesn't
+      // justify adding one - env.validation.ts's ConfigModule.forRoot
+      // has already fail-fast-validated the required vars by the time
+      // any provider factory runs, this one is optional regardless.
+      useFactory: () =>
+        new SsrfValidatorService(
+          parseTrustedOrigins(process.env.TRUSTED_PTERODACTYL_ORIGINS),
+        ),
+    },
     PterodactylHttpClient,
     PterodactylApplicationApiClient,
     PterodactylClientApiClient,

@@ -6,6 +6,34 @@ const ALLOWED_SCHEMES = new Set(['https:']);
 const ALLOWED_PORTS = new Set(['', '443', '8443']);
 
 /**
+ * Parses the `TRUSTED_PTERODACTYL_ORIGINS` env var (comma-separated
+ * exact origins, e.g. "http://10.10.10.109") into the normalized form
+ * SsrfValidatorService compares against. Exported so both apps'
+ * PterodactylModule can build the same list from the same raw string
+ * without duplicating the parsing/normalization logic.
+ *
+ * Malformed entries are silently dropped, not thrown on - a typo in an
+ * operator's optional allowlist should fall back to "not trusted"
+ * (the safe direction), not crash the app at startup the way a missing
+ * *required* var does in env.validation.ts.
+ */
+export function parseTrustedOrigins(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const origins: string[] = [];
+  for (const entry of raw.split(',')) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    try {
+      const url = new URL(trimmed);
+      origins.push(`${url.protocol}//${url.host}`.toLowerCase());
+    } catch {
+      // Not a parseable URL - dropped, see doc comment above.
+    }
+  }
+  return origins;
+}
+
+/**
  * Validates that a Pterodactyl instance baseUrl is safe for the backend
  * to make outbound requests to, before it's persisted AND again
  * immediately before every actual connection attempt (the second check
@@ -15,8 +43,59 @@ const ALLOWED_PORTS = new Set(['', '443', '8443']);
  */
 @Injectable()
 export class SsrfValidatorService {
+  private readonly trustedOrigins: ReadonlySet<string>;
+
+  constructor(trustedOrigins: readonly string[] = []) {
+    this.trustedOrigins = new Set(trustedOrigins.map((o) => o.toLowerCase()));
+  }
+
   async assertSafe(rawUrl: string): Promise<void> {
     const url = this.parseUrl(rawUrl);
+    this.assertAllowedScheme(url);
+    this.assertAllowedPort(url);
+    await this.assertSafeHost(url.hostname);
+  }
+
+  /**
+   * Same intent as `assertSafe`, for exactly one additional case: a URL
+   * whose scheme+host+port exactly matches an operator-configured entry
+   * in `TRUSTED_PTERODACTYL_ORIGINS` skips the HTTPS-only/port-allowlist
+   * rules and the private-IP block - loopback/link-local/metadata/
+   * multicast are STILL always rejected even for a trusted origin (via
+   * `assertSafeHost(..., { allowPrivate: true })`, the same mechanism
+   * already used below for DatabaseGatewayService).
+   *
+   * Deliberately a separate method, not a parameter on `assertSafe`:
+   * `assertSafe`'s other callers (webhook URLs in
+   * federation-worker's WebhookHttpClient, notification-channel URLs in
+   * NotificationsService) take arbitrary, tenant-supplied targets and
+   * must never be able to opt into this - keeping them on the
+   * unmodified `assertSafe` means that stays true by construction, not
+   * by convention. Only call sites that exclusively ever see
+   * `PterodactylInstance.baseUrl` (InstancesService, InstanceSyncHandler,
+   * and PterodactylHttpClient - the shared transport both
+   * PterodactylApplicationApiClient and PterodactylClientApiClient route
+   * every request through) use this method.
+   *
+   * The allowlist is an exact origin match, not a CIDR/private-range
+   * toggle, on purpose: trusting one fixed, operator-chosen origin lets
+   * a tenant reach exactly that one pre-approved address and nothing
+   * else - they cannot pivot to a different private host by supplying a
+   * different baseUrl, unlike a blanket "allow all 10.0.0.0/8" would.
+   * Prefer an IP-literal entry (e.g. "http://10.10.10.109") over a
+   * hostname when configuring this: an IP literal never touches DNS
+   * (see resolveHost's isIP short-circuit), so it has zero DNS-rebinding
+   * surface; a hostname-based trusted origin would still be re-resolved
+   * on every call and only get the loopback/link-local/metadata/
+   * multicast checks, not the full private-range block.
+   */
+  async assertSafeInstanceUrl(rawUrl: string): Promise<void> {
+    const url = this.parseUrl(rawUrl);
+    const origin = `${url.protocol}//${url.host}`.toLowerCase();
+    if (this.trustedOrigins.has(origin)) {
+      await this.assertSafeHost(url.hostname, { allowPrivate: true });
+      return;
+    }
     this.assertAllowedScheme(url);
     this.assertAllowedPort(url);
     await this.assertSafeHost(url.hostname);

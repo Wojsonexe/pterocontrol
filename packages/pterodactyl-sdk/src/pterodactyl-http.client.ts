@@ -77,7 +77,13 @@ export class PterodactylHttpClient {
     timeoutMs: number,
   ): Promise<unknown> {
     const url = new URL(path, baseUrl).toString();
-    await this.ssrfValidator.assertSafe(url);
+    // assertSafeInstanceUrl, not assertSafe: this client is only ever
+    // used for PterodactylInstance.baseUrl traffic (see
+    // PterodactylApplicationApiClient/PterodactylClientApiClient, its
+    // only two callers), never a tenant-arbitrary URL - safe to allow an
+    // operator-trusted private origin here (see that method's own doc
+    // comment for why webhook/notification URLs must never do this).
+    await this.ssrfValidator.assertSafeInstanceUrl(url);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);

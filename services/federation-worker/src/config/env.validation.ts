@@ -2,6 +2,11 @@ export interface EnvironmentVariables {
   DATABASE_URL: string;
   SECRETS_MASTER_KEY: string;
   RABBITMQ_URL: string;
+  // Same meaning and value as control-plane-api's own env.validation.ts -
+  // both processes must be configured identically or InstanceSyncHandler
+  // would trust an origin control-plane-api's InstancesService didn't
+  // (or vice versa). See SsrfValidatorService.assertSafeInstanceUrl.
+  TRUSTED_PTERODACTYL_ORIGINS?: string;
   NODE_ENV?: string;
 }
 

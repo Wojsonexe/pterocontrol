@@ -8,6 +8,13 @@ export interface EnvironmentVariables {
   // default, not a startup error, since bootstrap is a one-time,
   // deliberately-enabled operation, not a normally-required setting.
   BOOTSTRAP_TOKEN?: string;
+  // Optional, comma-separated exact origins (e.g.
+  // "http://10.10.10.109") the operator explicitly trusts as private
+  // Pterodactyl instance targets - see SsrfValidatorService.
+  // assertSafeInstanceUrl's doc comment. Unset means no exceptions:
+  // every instance baseUrl still needs to be a public https:// host,
+  // today's exact behavior.
+  TRUSTED_PTERODACTYL_ORIGINS?: string;
   PORT?: string;
   NODE_ENV?: string;
 }

@@ -8,13 +8,13 @@ import {
 import { SsrfValidatorService } from './ssrf-validator.service';
 
 describe('PterodactylHttpClient', () => {
-  const ssrfMock = { assertSafe: jest.fn() };
+  const ssrfMock = { assertSafeInstanceUrl: jest.fn() };
   let client: PterodactylHttpClient;
   const originalFetch = global.fetch;
 
   beforeEach(() => {
-    ssrfMock.assertSafe.mockReset();
-    ssrfMock.assertSafe.mockResolvedValue(undefined);
+    ssrfMock.assertSafeInstanceUrl.mockReset();
+    ssrfMock.assertSafeInstanceUrl.mockResolvedValue(undefined);
     client = new PterodactylHttpClient(
       ssrfMock as unknown as SsrfValidatorService,
     );
@@ -31,13 +31,13 @@ describe('PterodactylHttpClient', () => {
 
     await client.get('https://panel.example.com', '/api/application/nodes', 'key');
 
-    expect(ssrfMock.assertSafe).toHaveBeenCalledWith(
+    expect(ssrfMock.assertSafeInstanceUrl).toHaveBeenCalledWith(
       'https://panel.example.com/api/application/nodes',
     );
   });
 
   it('never calls fetch when SSRF validation rejects the URL', async () => {
-    ssrfMock.assertSafe.mockRejectedValueOnce(new Error('blocked'));
+    ssrfMock.assertSafeInstanceUrl.mockRejectedValueOnce(new Error('blocked'));
     global.fetch = jest.fn();
 
     await expect(client.get('https://panel.example.com', '/x', 'key')).rejects.toThrow(
@@ -122,7 +122,7 @@ describe('PterodactylHttpClient', () => {
     });
 
     it('validates SSRF before sending a POST too', async () => {
-      ssrfMock.assertSafe.mockRejectedValueOnce(new Error('blocked'));
+      ssrfMock.assertSafeInstanceUrl.mockRejectedValueOnce(new Error('blocked'));
       global.fetch = jest.fn();
 
       await expect(
@@ -159,7 +159,7 @@ describe('PterodactylHttpClient', () => {
     });
 
     it('validates SSRF before sending a DELETE too', async () => {
-      ssrfMock.assertSafe.mockRejectedValueOnce(new Error('blocked'));
+      ssrfMock.assertSafeInstanceUrl.mockRejectedValueOnce(new Error('blocked'));
       global.fetch = jest.fn();
 
       await expect(
@@ -194,7 +194,7 @@ describe('PterodactylHttpClient', () => {
     });
 
     it('validates SSRF before sending a PUT too', async () => {
-      ssrfMock.assertSafe.mockRejectedValueOnce(new Error('blocked'));
+      ssrfMock.assertSafeInstanceUrl.mockRejectedValueOnce(new Error('blocked'));
       global.fetch = jest.fn();
 
       await expect(

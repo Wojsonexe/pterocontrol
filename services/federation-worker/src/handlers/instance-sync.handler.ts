@@ -70,7 +70,7 @@ export class InstanceSyncHandler {
     let newStatus: InstanceStatus;
 
     try {
-      await this.ssrfValidator.assertSafe(instance.baseUrl);
+      await this.ssrfValidator.assertSafeInstanceUrl(instance.baseUrl);
       await this.applicationApi.testConnection(instance.baseUrl, apiKey);
       await this.prisma.pterodactylInstance.update({
         where: { id: instanceId },

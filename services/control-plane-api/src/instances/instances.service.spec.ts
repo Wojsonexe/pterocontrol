@@ -37,7 +37,7 @@ describe('InstancesService', () => {
     },
     $transaction: jest.fn(),
   };
-  const ssrfMock = { assertSafe: jest.fn() };
+  const ssrfMock = { assertSafeInstanceUrl: jest.fn() };
   const secretsMock = { encrypt: jest.fn(), decrypt: jest.fn() };
   const applicationApiMock = { testConnection: jest.fn() };
   const eventsServiceMock = { record: jest.fn() };
@@ -67,7 +67,7 @@ describe('InstancesService', () => {
 
   describe('create', () => {
     it('runs SSRF validation before touching the database at all', async () => {
-      ssrfMock.assertSafe.mockRejectedValueOnce(new Error('blocked: private IP'));
+      ssrfMock.assertSafeInstanceUrl.mockRejectedValueOnce(new Error('blocked: private IP'));
 
       await expect(service.create(tenantId, dto)).rejects.toThrow('blocked');
       expect(prismaMock.pterodactylInstance.findUnique).not.toHaveBeenCalled();
@@ -75,7 +75,7 @@ describe('InstancesService', () => {
     });
 
     it('rejects a duplicate (tenantId, baseUrl) with a 409', async () => {
-      ssrfMock.assertSafe.mockResolvedValueOnce(undefined);
+      ssrfMock.assertSafeInstanceUrl.mockResolvedValueOnce(undefined);
       prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce({
         id: 'existing',
       });
@@ -87,7 +87,7 @@ describe('InstancesService', () => {
     });
 
     it('encrypts both keys, stores them, then marks ONLINE on a successful connectivity test', async () => {
-      ssrfMock.assertSafe.mockResolvedValue(undefined);
+      ssrfMock.assertSafeInstanceUrl.mockResolvedValue(undefined);
       prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce(null); // duplicate check
       prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce({
         status: InstanceStatus.PENDING_SYNC,
@@ -140,7 +140,7 @@ describe('InstancesService', () => {
     });
 
     it('still saves the instance but marks UNREACHABLE with lastError when connectivity fails', async () => {
-      ssrfMock.assertSafe.mockResolvedValue(undefined);
+      ssrfMock.assertSafeInstanceUrl.mockResolvedValue(undefined);
       prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce(null); // duplicate check
       prismaMock.pterodactylInstance.findUnique.mockResolvedValueOnce({
         status: InstanceStatus.PENDING_SYNC,

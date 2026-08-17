@@ -55,7 +55,7 @@ export class InstancesService {
     tenantId: string,
     dto: CreateInstanceDto,
   ): Promise<PterodactylInstance> {
-    await this.ssrfValidator.assertSafe(dto.baseUrl);
+    await this.ssrfValidator.assertSafeInstanceUrl(dto.baseUrl);
 
     const existing = await this.prisma.pterodactylInstance.findUnique({
       where: { tenantId_baseUrl: { tenantId, baseUrl: dto.baseUrl } },
@@ -199,7 +199,7 @@ export class InstancesService {
       // Re-validated immediately before the actual outbound call, even
       // though create()/resync() already checked it moments earlier -
       // see SsrfValidatorService's doc comment on DNS rebinding.
-      await this.ssrfValidator.assertSafe(baseUrl);
+      await this.ssrfValidator.assertSafeInstanceUrl(baseUrl);
       await this.applicationApi.testConnection(baseUrl, applicationApiKey);
 
       updated = await this.prisma.pterodactylInstance.update({

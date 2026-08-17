@@ -28,7 +28,7 @@ describe('InstanceSyncHandler', () => {
     instanceCredential: { findUnique: jest.fn() },
     event: { create: jest.fn<Promise<unknown>, [EventCreateArgs]>() },
   };
-  const ssrfMock = { assertSafe: jest.fn() };
+  const ssrfMock = { assertSafeInstanceUrl: jest.fn() };
   const applicationApiMock = { testConnection: jest.fn() };
   const secretsMock = { decrypt: jest.fn() };
 
@@ -95,7 +95,7 @@ describe('InstanceSyncHandler', () => {
       ciphertext: Buffer.from('enc'),
     });
     secretsMock.decrypt.mockReturnValueOnce('decrypted-key');
-    ssrfMock.assertSafe.mockResolvedValueOnce(undefined);
+    ssrfMock.assertSafeInstanceUrl.mockResolvedValueOnce(undefined);
     applicationApiMock.testConnection.mockResolvedValueOnce(undefined);
     prismaMock.pterodactylInstance.update.mockResolvedValueOnce({});
     prismaMock.event.create.mockResolvedValueOnce({});
@@ -126,7 +126,7 @@ describe('InstanceSyncHandler', () => {
       ciphertext: Buffer.from('enc'),
     });
     secretsMock.decrypt.mockReturnValueOnce('decrypted-key');
-    ssrfMock.assertSafe.mockResolvedValueOnce(undefined);
+    ssrfMock.assertSafeInstanceUrl.mockResolvedValueOnce(undefined);
     const authError = new PterodactylAuthError('bad key');
     applicationApiMock.testConnection.mockRejectedValueOnce(authError);
     prismaMock.pterodactylInstance.update.mockResolvedValueOnce({});
@@ -157,7 +157,7 @@ describe('InstanceSyncHandler', () => {
       ciphertext: Buffer.from('enc'),
     });
     secretsMock.decrypt.mockReturnValueOnce('decrypted-key');
-    ssrfMock.assertSafe.mockResolvedValueOnce(undefined);
+    ssrfMock.assertSafeInstanceUrl.mockResolvedValueOnce(undefined);
     const authError = new PterodactylAuthError('still bad');
     applicationApiMock.testConnection.mockRejectedValueOnce(authError);
     prismaMock.pterodactylInstance.update.mockResolvedValueOnce({});
