@@ -55,7 +55,18 @@ app.*.map.json
 .env
 .env.*
 *.env
-**/secrets.*
+# Scoped to actual credential-dump extensions, NOT a bare `**/secrets.*` -
+# that wildcard silently matched legitimate source files too (found live:
+# services/federation-worker/src/secrets/secrets.module.ts was never
+# committed because of exactly this, and a fresh `git clone` + Docker
+# build failed with a real MODULE_NOT_FOUND-style TS error as a result -
+# `npm run build`/`typecheck` locally never caught it because the
+# untracked file was still physically on disk).
+**/secrets.json
+**/secrets.yaml
+**/secrets.yml
+**/secrets.env
+**/secrets.txt
 **/*.secret
 **/*credentials*.json
 **/*credentials*.yaml
