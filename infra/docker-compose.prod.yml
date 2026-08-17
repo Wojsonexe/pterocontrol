@@ -1,0 +1,167 @@
+# Production stack for the single-server-behind-a-Cloudflare-Tunnel
+# deployment the user described (private server, no public inbound ports
+# at all - Cloudflare terminates TLS at their edge and tunnels traffic in
+# over an outbound-only connection from `cloudflared`). See
+# infra/DEPLOYMENT.md for the manual steps this file alone can't do
+# (creating the tunnel, routing hostnames to internal services).
+#
+# Deliberately different from docker-compose.yml (local dev), not the same
+# file with tweaked values:
+#   - No `redis` service. Confirmed unused anywhere in the actual
+#     implementation (grepped the whole workspace) - RabbitMQ is the real
+#     background-job transport (see IMPLEMENTATION_STATUS.md, FAZA 9a/9b),
+#     Redis in the dev compose is a leftover from before that decision.
+#     Not carried forward here.
+#   - Postgres/RabbitMQ publish NO host ports at all, not even
+#     127.0.0.1:... - the dev compose's loopback-only binding exists so a
+#     human on that machine can connect a DB client; in production nothing
+#     outside this compose network needs to reach them directly.
+#   - control-plane-api/federation-worker are built from this repo's own
+#     Dockerfiles, not pulled from a registry - no registry/CI-publish
+#     step exists yet (a separate decision from "does the compose file
+#     work"), so `docker compose build` is required before `up`.
+#
+# Usage: cp infra/.env.prod.example infra/.env.prod, fill it in, then
+#   docker compose -f infra/docker-compose.prod.yml --env-file infra/.env.prod build
+#   docker compose -f infra/docker-compose.prod.yml --env-file infra/.env.prod run --rm migrate
+#   docker compose -f infra/docker-compose.prod.yml --env-file infra/.env.prod up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pterocontrol-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: pterocontrol-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # One-off migration runner, NOT started by `up -d` (no `restart:`, and
+  # compose only starts services explicitly `run` or depended-on) - run
+  # deliberately, once, before/after `up` on every deploy that has new
+  # migrations. Same image as control-plane-api, different command -
+  # verified live in this session that this exact pattern (this image,
+  # `npx prisma migrate deploy`) actually works against a real Postgres.
+  migrate:
+    build:
+      context: ..
+      dockerfile: services/control-plane-api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["npx", "prisma", "migrate", "deploy", "--schema", "services/control-plane-api/prisma/schema.prisma"]
+
+  control-plane-api:
+    build:
+      context: ..
+      dockerfile: services/control-plane-api/Dockerfile
+    container_name: pterocontrol-control-plane-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      SECRETS_MASTER_KEY: ${SECRETS_MASTER_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    # No `ports:` - only cloudflared (same Docker network) and prometheus
+    # reach this service, both internally by service name. Nothing binds
+    # to the host's network interfaces at all.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  federation-worker:
+    build:
+      context: ..
+      dockerfile: services/federation-worker/Dockerfile
+    container_name: pterocontrol-federation-worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      SECRETS_MASTER_KEY: ${SECRETS_MASTER_KEY}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # Outbound-only tunnel to Cloudflare's edge - no inbound port on this
+  # host needs to be opened for any of this to be publicly reachable.
+  # TUNNEL_TOKEN comes from the Cloudflare Zero Trust dashboard (Networks
+  # -> Tunnels -> create a tunnel, "Docker" connector type gives you this
+  # token directly) - which internal hostname each public route forwards
+  # to (control-plane-api:3000, grafana:3000) is configured in that same
+  # dashboard, not in this file. See infra/DEPLOYMENT.md.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: pterocontrol-cloudflared
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - control-plane-api
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pterocontrol-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - control-plane-api
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: pterocontrol-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  prometheus_data:
+  grafana_data:

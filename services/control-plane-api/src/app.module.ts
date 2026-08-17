@@ -10,6 +10,7 @@ import { DatabaseGatewayModule } from './database-gateway/database-gateway.modul
 import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
 import { InstancesModule } from './instances/instances.module';
+import { MetricsModule } from './metrics/metrics.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RabbitmqModule } from './rabbitmq/rabbitmq.module';
 import { SchedulesModule } from './schedules/schedules.module';
@@ -24,6 +25,7 @@ import { TenantsModule } from './tenants/tenants.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
     HealthModule,
+    MetricsModule,
     SecretsModule,
     PrismaModule,
     RabbitmqModule,

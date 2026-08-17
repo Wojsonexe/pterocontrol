@@ -1,0 +1,65 @@
+{
+  "title": "control-plane-api",
+  "uid": "control-plane-api",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Up",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "up{job=\"control-plane-api\"}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Resident memory",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 9, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        { "expr": "process_resident_memory_bytes{job=\"control-plane-api\"}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "CPU usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 9, "x": 15, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "targets": [
+        { "expr": "rate(process_cpu_seconds_total{job=\"control-plane-api\"}[5m])", "refId": "A" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Event loop lag (mean)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "nodejs_eventloop_lag_mean_seconds{job=\"control-plane-api\"}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Process uptime",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "time() - process_start_time_seconds{job=\"control-plane-api\"}", "refId": "A" }
+      ]
+    }
+  ]
+}

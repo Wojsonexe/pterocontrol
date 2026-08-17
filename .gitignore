@@ -71,6 +71,8 @@ npm-debug.log*
 # .env.* wyżej w tym pliku łapie też .env.example — to jedyny świadomy
 # wyjątek: .env.example to bezpieczny, commitowany szablon bez sekretów.
 !**/.env.example
+# Ten sam wyjątek dla infra/.env.prod.example (szablon dla docker-compose.prod.yml).
+!**/.env.prod.example
 
 # **/secrets.* wyżej w tym pliku (myślane pod pliki typu secrets.json)
 # łapie też legalne pliki źródłowe zaczynające się od "secrets." —
