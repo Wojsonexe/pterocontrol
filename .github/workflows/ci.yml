@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, 'feature/**']
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (typecheck, lint, unit tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck (all workspaces)
+        run: npm run typecheck --workspaces --if-present
+
+      - name: Lint (all workspaces)
+        run: npm run lint --workspaces --if-present
+
+      - name: Unit tests (all workspaces)
+        run: npm run test --workspaces --if-present
+
+  backend-e2e:
+    name: Backend E2E (control-plane-api, real Docker Postgres+RabbitMQ)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # global-setup.js spins up its own throwaway Postgres+RabbitMQ via
+      # `docker run` (same containers this whole project's manual "live
+      # verification" methodology used) - ubuntu-latest runners have
+      # Docker available out of the box, nothing extra to provision here.
+      - name: Run E2E suite
+        working-directory: services/control-plane-api
+        run: npm run test:e2e
+
+  docker-build:
+    name: Docker image build (control-plane-api, federation-worker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build-only smoke test - proves both Dockerfiles still produce a
+      # working image (this is exactly the class of bug a plain `npm run
+      # build` never catches: nest build's dist/src/main.js vs a plain
+      # tsc build's flat dist/main.js was a real, live-found mismatch
+      # during this repo's own Dockerfile authoring). Not pushed anywhere;
+      # publishing to a registry is a deployment-target decision, not a CI
+      # concern - see IMPLEMENTATION_STATUS.md, "Następny konkretny krok".
+      - name: Build control-plane-api image
+        run: docker build -f services/control-plane-api/Dockerfile -t pterocontrol-control-plane-api:ci .
+
+      - name: Build federation-worker image
+        run: docker build -f services/federation-worker/Dockerfile -t pterocontrol-federation-worker:ci .
+
+  flutter:
+    name: Flutter (analyze, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
