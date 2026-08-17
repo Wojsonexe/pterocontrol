@@ -1,6 +1,6 @@
 # Pterocontrol Control Plane — stan implementacji
 
-Ostatnia aktualizacja: 2026-08-16, branch `feature/control-plane-mvp`, ostatni commit `fbb2fc6`.
+Ostatnia aktualizacja: 2026-08-17, branch `feature/control-plane-mvp`, ostatni commit `24b0cf3`.
 
 Dokument-punkt-kontrolny w trybie autonomicznej implementacji. Kolejna sesja: przeczytaj to w całości, potem kontynuuj od sekcji "Następny konkretny krok" — nie projektuj architektury od nowa, jest już ustalona i częściowo zaimplementowana.
 
@@ -157,11 +157,23 @@ Repo to Flutter (`lib/`, `android/`, `ios/`, `test/`, korzeń repo) + backend ob
 - **Sprawdzone i uznane za OK bez zmian**: RBAC (`@Roles('owner','admin')` konsekwentnie na wszystkich endpointach mutujących, w tym Database Gateway); `sql-guard.ts` (blokuje słowo kluczowe DDL gdziekolwiek w treści, nie tylko na początku); `MySqlConnectionFactory` zawsze zamyka połączenie w `finally`; brak sekretów w wywołaniach loggera (grep po całym `src/`); `JwtAuthGuard` faktycznie weryfikuje podpis (`verifyAsync`), `JWT_SECRET` ładowany przez `getOrThrow` (fail-closed); `npm audit` — 0 podatności we wszystkich 5 workspace'ach backendu.
 - Testy: 12 nowych w `ssrf-validator.service.spec.ts` (allowPrivate dopuszcza RFC1918/ULA, nadal blokuje loopback/link-local/metadane), 2 nowe w `database-gateway.service.spec.ts` (SSRF-check wołany przed połączeniem). 337 testów łącznie w 5 workspace'ach backendu.
 
+### Testy E2E — control-plane-api (punkt 11)
+- Cała weryfikacja "live" w tej sesji do tej pory była ręczna i jednorazowa (tymczasowy Docker, `curl`, sprzątane po każdej fazie) — ta faza zamienia tę metodykę w powtarzalny, uruchamialny skrypt: `npm run test:e2e` w `services/control-plane-api`. Jest `globalSetup`/`globalTeardown` (`test/global-setup.js`/`global-teardown.js`) same stawiają i sprzątają tymczasowy Postgres+RabbitMQ w Dockerze (porty `5479`/`5679`/`15679`, `docker rm -f` na start i w teardown — odporne na przerwany poprzedni przebieg), generują świeże losowe sekrety do jednorazowego `.env.e2e` (gitignored przez istniejący wzorzec `.env.*`), uruchamiają `prisma migrate deploy`. Testy same odpalają prawdziwy `AppModule` przez `@nestjs/testing` + `supertest` — zero mocków poniżej granicy HTTP.
+- **Real bug znaleziony i naprawiony przy budowie harnessu**: `ConfigModule.forRoot(...)` wykonuje się w momencie ewaluacji dekoratora `@Module(...)` na `AppModule`, czyli przy samym imporcie modułu — nie przy starcie `NestFactory`/`Test.createTestingModule`. Statyczny `import { AppModule }` w helperze testowym (`test/e2e/setup-app.ts`) więc ładował **prawdziwy dev `.env`** (i faktycznie próbował połączyć się z produkcyjnymi poświadczeniami `pterocontrol`) zanim własny kod testu zdążył wgrać `.env.e2e`. Odtworzone live: `PrismaClientInitializationError: ... for 'pterocontrol'`. Naprawione przez Jest `setupFiles` (`test/e2e/env-setup.ts`) — gwarantowane uruchomienie przed jakimkolwiek importem pliku testowego, więc wygrywa ten wyścig. Ponownie uruchomione po naprawie — `PASS`.
+- Trzy specyfikacje, każda pokrywa coś, czego ta sesja nigdy nie miała jako uruchamialnego testu:
+  - `bootstrap-and-auth.e2e-spec.ts` — bootstrap bez/z poprawnym tokenem, logowanie ze złym/dobrym hasłem, `GET /tenants/me` z/bez tokena.
+  - `instances.e2e-spec.ts` — **prawdziwy SSRF-check bez mocka** (`https://127.0.0.1` → `400`), tworzenie instancji z realnym testem łączności (`https://example.com` poprawnie oznaczony `UNREACHABLE` — realny host, ale nie prawdziwy Pterodactyl), izolacja tenantów na `GET /instances`.
+  - `rbac.e2e-spec.ts` — **pierwszy w tej sesji żywy request z rolą inną niż `owner`** (wcześniej udokumentowana luka). Ponieważ nie ma jeszcze endpointu zapraszania członków, `viewer` Membership jest jawnie zaseedowany bezpośrednio przez Prisma w setupie testu (test-only obejście brakującej funkcji, nie coś co test ma weryfikować) — prawdziwy HTTP request jako viewer potwierdza `403` na `@Roles('owner','admin')`-owanym `POST /instances` i `200` na nierestrykcyjnym `GET /instances`.
+- **Uczciwie znaleziony i naprawiony błąd we własnym teście, nie w aplikacji**: pierwszy szkic `instances.e2e-spec.ts` zakładał `PENDING_SYNC` zaraz po utworzeniu instancji — `InstancesService.create()` faktycznie testuje łączność synchronicznie od razu po zapisie (udokumentowane w jej własnym komentarzu), więc `example.com` poprawnie zwraca `UNREACHABLE`. Test poprawiony, nie aplikacja.
+- **Świadomie NIEzrobione w tej fazie**: automatyzacja Flutter (`integration_test`) tego, co w fazie 9 zrobione ręcznie przez `adb` (login → lista → szczegóły → power). Odłożone świadomie — wymagałoby nowej zależności deweloperskiej, prawdziwego emulatora/urządzenia do uruchomienia (ten sam wymóg infrastrukturalny co ręczna weryfikacja już wykonana), i sensowniej pasuje do przyszłej konfiguracji CI (Android emulator w CI to osobna decyzja infrastrukturalna) niż do wciśnięcia na siłę w tę fazę. Manualna weryfikacja na prawdziwym emulatorze z fazy 9 pozostaje jedynym dowodem end-to-end dla Fluttera; 423 testy jednostkowe/widgetowe (w tym 30 nowych dla `control_plane`, wszystkie przez realny `FakeHttpClientAdapter`, nie atrapy zachowania) to rygor na granicy klienta HTTP, nie pełny E2E przez prawdziwe urządzenie.
+- Testy: 11 nowych E2E (3 pliki), ~14s przy ciepłym cache `ts-jest`. Nie wchodzą w konflikt z istniejącym `testRegex` (`.spec.ts$`) — `.e2e-spec.ts` nie pasuje, zero kolizji z 160 testami jednostkowymi.
+
 ## Stan testów
 
 ```
-Backend: 337 testów łącznie, wszystkie przechodzą
+Backend (jednostkowe): 337 testów łącznie, wszystkie przechodzą
   (160 control-plane-api + 65 federation-worker + 87 pterodactyl-sdk + 22 rabbitmq + 3 secrets)
+Backend (E2E, control-plane-api): 11 testów, wszystkie przechodzą
 npm run typecheck  -> czysty (wszystkie 5 workspace'ów)
 npm run lint        -> czysty (wszystkie 5 workspace'ów)
 
@@ -169,7 +181,9 @@ Flutter: 423 testy łącznie, wszystkie przechodzą (393 istniejące + 30 nowych
 flutter analyze -> czysty
 ```
 
-Uruchom backend: `cd "E:\Projekty\pterodactyl-analysis\mobile" && npm run typecheck --workspaces --if-present && npm run lint --workspaces --if-present && npm run test --workspaces --if-present`
+Uruchom backend (jednostkowe): `cd "E:\Projekty\pterodactyl-analysis\mobile" && npm run typecheck --workspaces --if-present && npm run lint --workspaces --if-present && npm run test --workspaces --if-present`
+
+Uruchom backend E2E (wymaga Docker): `cd "E:\Projekty\pterodactyl-analysis\mobile\services\control-plane-api" && npm run test:e2e`
 
 Uruchom Flutter: `cd "E:\Projekty\pterodactyl-analysis\mobile" && flutter analyze && flutter test`
 
@@ -187,7 +201,7 @@ npm run start:dev
 ## Świadomie NIEkompletne w tej fazie (uczciwie, nie udawane)
 
 - **Alert Engine ewaluuje w pętli w `control-plane-api` (scheduled job), nie jako konsument RabbitMQ** — świadoma decyzja ("prostszy wariant, nie przepisuj architektury bez potrzeby"). Notifications natomiast POKAZAŁO realny, uzasadniony przypadek dla `cp.events` (patrz wyżej) — więc rozdzielenie evaluacji od dispatchu przez kolejkę jest już częściowo prawdą (evaluacja lokalna, powiadamianie przez kolejkę).
-- **RBAC nie ma jeszcze prawdziwego testu wielo-rolowego na żywo** — bootstrap tworzy tylko rolę `owner`, brak endpointu zapraszania członków z inną rolą. `RolesGuard` w pełni jednostkowo przetestowany, ale nie na żywym requeście z rolą `viewer`.
+- **RBAC ma teraz żywy test E2E z rolą `viewer`** (`rbac.e2e-spec.ts`) — ale nadal brak endpointu zapraszania członków z inną rolą (`viewer` Membership w tym teście jest zaseedowany bezpośrednio przez Prisma, bo API do tego nie istnieje). To osobna, wciąż otwarta luka funkcjonalna, nie testowa.
 - **Brak Prisma `Permission`** (fine-grained RBAC) — świadomie, zgodnie z MVP.
 - **Brak plików/konsoli WebSocket** przez Control Plane.
 - **Brak testów kolejności wiadomości (message-ordering)** w `federation-worker` — nie było jeszcze przypadku w kodzie, gdzie kolejność między dwiema wiadomościami faktycznie ma znaczenie (każdy handler operuje na innym jobId niezależnie).
@@ -197,7 +211,10 @@ npm run start:dev
 - **Database Gateway obcina wynik `SELECT` po stronie aplikacji, po zbuforowaniu przez driver** — nie jest to prawdziwy streaming cursor z twardym limitem pamięci; bardzo duży niezaobcięty `SELECT` nadal kosztuje pamięć przed obcięciem do 500 wierszy.
 - **Flutter Control Plane mode ma tylko login+lista serwerów+zasoby+power** — brak konsoli/plików/backupów/harmonogramów/alertów/notyfikacji/baz danych z poziomu apki (wszystkie te moduły istnieją na backendzie, ale nie mają jeszcze ekranu we Flutterze). Brak odświeżania tokenu — backend nie ma endpointu refresh, token wygasa po 15 min i użytkownik musi się zalogować ponownie (`401` poprawnie obsłużony, nie crash).
 - **`sql-guard.ts`/Database Gateway pozostają w pełni objęte tylko podstawowym keyword-guardem** — SSRF hosta bazy naprawione (patrz "Security review" wyżej), ale sam parser SQL nadal nie jest pełnym parserem (patrz wyżej) — zaakceptowane ryzyko dla uwierzytelnionego `owner`/`admin`, nie dla nieznanego atakującego.
-- **Nic z Security review wzwyż nie istnieje**: pełne testy integracyjne/E2E, produkcyjny deployment (Prometheus/Grafana/Traefik/TLS, osobny `docker-compose.prod.yml`).
+- **E2E istnieje tylko dla control-plane-api, nie dla `federation-worker`** — RabbitMQ retry/DLQ/idempotency są już dokładnie pokryte jednostkowo (`queue-consumer.spec.ts` z prawdziwym RabbitMQ w Dockerze, patrz FAZA 9b), ale nie jako pełny E2E przez oddzielny, prawdziwy proces `federation-worker` skoordynowany z `control-plane-api` w jednym uruchamialnym skrypcie.
+- **Brak automatyzacji Flutter (`integration_test`)** — manualna weryfikacja na prawdziwym emulatorze (FAZA 9, Control Plane mode) pozostaje jedynym dowodem end-to-end dla Fluttera; świadomie odłożone, patrz sekcja "Testy E2E" wyżej.
+- **Alert Engine E2E nie pokrywa realnego upływu czasu przez cron** — E2E backend testuje żądania HTTP synchronicznie (sekundy), nie 60-sekundowe ticki schedulera; ta ścieżka ma już jednorazową, ręczną weryfikację live (FAZA Alert Engine) ale nie powtarzalny test. Świadoma decyzja zakresu — dodanie tego zrobiłoby E2E suite powolny i niewygodny dla CI bez proporcjonalnej korzyści.
+- **Nic z testów E2E wzwyż nie istnieje**: produkcyjny deployment (Prometheus/Grafana/Traefik/TLS, osobny `docker-compose.prod.yml`, CI pipeline).
 
 ## Znane ograniczenia środowiska (nie kod, ale warte zapisania)
 
@@ -206,14 +223,14 @@ npm run start:dev
 
 ## Następny konkretny krok
 
-**Testy E2E** (punkt 11 z listy uzgodnionej z użytkownikiem).
+**Production/deployment** (punkt 12, ostatni z listy uzgodnionej z użytkownikiem).
 
-Rozróżnienie od tego, co już istnieje: cała ta sesja intensywnie używała weryfikacji "live" (tymczasowe Docker Postgres/RabbitMQ/MySQL, realny `curl`/HTTP, realny `flutter run` na emulatorze) — ale każda taka weryfikacja była ręczna, jednorazowa, wykonywana i sprzątana w ramach danej fazy, nie zapisana jako uruchamialny na żądanie test w repo. E2E oznacza tutaj: zestaw testów, które ktoś (albo CI) może uruchomić bez czytania tego dokumentu i odtworzyć te same gwarancje automatycznie.
+To jedyny punkt na liście, gdzie "sprawdź kod zamiast zgadywać" nie wystarczy — produkcyjny deployment z definicji wymaga faktów, których nie ma w tym repo ani nie da się wywnioskować z kodu: **gdzie** to ma faktycznie działać (własny VPS? chmura — który dostawca? Docker Swarm/Kubernetes czy pojedynczy host przez docker-compose?), **jaka domena** (TLS przez Let's Encrypt/ACME wymaga prawdziwej, wskazującej na ten serwer domeny), i czy w ogóle chodzi o pełny stos observability (Prometheus/Grafana) czy węższy zakres. Zgadywanie tych odpowiedzi i pisanie configu pod fikcyjną domenę/dostawcę byłoby dokładnie tym, przed czym ostrzega mandat tej sesji ("nie implementuj fikcyjnych endpointów/infrastruktury").
 
-Zacząć od sprawdzenia, czego repo jeszcze nie ma (nie zakładać):
-1. Sprawdzić, czy istnieje już jakikolwiek E2E runner skonfigurowany w `services/control-plane-api` (NestJS ma wbudowane wsparcie E2E przez `@nestjs/testing` + `supertest`, ale trzeba zweryfikować, czy `package.json`/`test/` już to ma, zamiast zakładać).
-2. **Backend E2E**: prawdopodobnie docker-compose-based test harness (tymczasowy Postgres+RabbitMQ, tak jak w każdej fazie tej sesji, ale jako skrypt, nie ręczne kroki) uruchamiający realny `NestFactory.create(AppModule)` i wykonujący żądania HTTP przez `supertest` na kluczowych przepływach: bootstrap tenanta → login → CRUD instancji → sync → RBAC (403 dla nieuprawnionej roli — **pierwszy raz w tej sesji z rolą inną niż `owner`**, patrz "Świadomie NIEkompletne") → alert engine end-to-end (insert snapshot → czekaj na tick → alert) → RabbitMQ retry/DLQ (już pokryte jednostkowo w `queue-consumer.spec.ts`, ale nie jako pełny E2E przez prawdziwy `federation-worker` proces).
-3. **Flutter integration tests**: sprawdzić czy `integration_test` (pakiet Fluttera) jest już zależnością — jeśli nie, rozważyć dodanie do `pubspec.yaml` jako `dev_dependency` (to nie narusza zasady "nie dotykaj bez potrzeby", bo punkt 9 już autoryzował zmiany w Flutterze, a testy same w sobie nie zmieniają zachowania apki). Automatyzacja tego, co w tej sesji było robione ręcznie przez `adb`: login Control Plane → lista serwerów → szczegóły → power action, na prawdziwym emulatorze/urządzeniu.
-4. Rozważyć, czy pełny E2E między realnym Flutterem a realnym `control-plane-api` w tej samej automatyzacji (nie tylko osobno) ma sens na tym etapie, czy to already-diminishing-returns bez prawdziwego Pterodactyla do testowania przeciwko.
+Konkretne, niezależne od tych niewiadomych rzeczy, które da się zrobić od razu bez pytania (i od tego warto zacząć):
+1. **Dockerfile dla `control-plane-api` i `federation-worker`** — sprawdzić, czy już istnieją (nie zakładać). Jeśli nie, multi-stage build (build → slim runtime), non-root user, tylko potrzebne pliki (nie cały monorepo w obrazie).
+2. **`.dockerignore`** — jeśli nie istnieje, żeby build nie kopiował `node_modules`/`.env`/`dist` z hosta.
+3. **CI pipeline** (np. GitHub Actions) uruchamiający na każdy push/PR dokładnie to, co ta sesja robiła ręcznie na końcu każdej fazy: `npm run typecheck/lint/test --workspaces`, `npm run test:e2e` (potrzebuje Dockera w runnerze — standardowo dostępny w GitHub-hosted runnerach), `flutter analyze && flutter test`. To nie wymaga żadnej decyzji o docelowej infrastrukturze i jest czystym zyskiem już teraz.
+4. `infra/docker-compose.yml` (lokalny dev) już naprawiony w fazie Security review (porty na `127.0.0.1`) — **nie kopiować go 1:1 jako "prod"**, produkcyjny plik to świadomie osobny artefakt (inne hasła, TLS, bez publicznie wystawionych portów bazy/kolejki w ogóle, nie tylko `127.0.0.1`).
 
-Po tej fazie: production/deployment (ostatni punkt listy), zgodnie z listą uzgodnioną z użytkownikiem. Kontynuować autonomicznie, bez zatrzymywania się na potwierdzenie między etapami, chyba że pojawi się jeden z 5 dozwolonych warunków przerwania z mandatu tej sesji.
+Po zrobieniu punktów 1-3 (nie wymagają decyzji użytkownika): zapytać o docelową infrastrukturę (patrz wyżej) zamiast zgadywać, zanim zaczniesz pisać `docker-compose.prod.yml`/Traefik/Prometheus config pod konkretne środowisko. To legitny z 5 dozwolonych warunków przerwania z mandatu tej sesji (nieodwracalna decyzja + brak dostępu do zewnętrznych faktów bez lokalnego substytutu) — nie powód do przerwania całej pracy, tylko do zadania pytania w odpowiednim momencie zamiast po fakcie naprawiania złych założeń.
