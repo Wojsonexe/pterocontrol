@@ -236,15 +236,28 @@ npm run start:dev
 - Ta maszyna (Windows, gdzie ta sesja pracowała) ma inne, niezwiązane projekty zajmujące standardowe porty Dockera (5432/6379). Każda weryfikacja live używała tymczasowych, jednorazowych kontenerów na innych portach (5442-5447), zawsze sprzątanych po weryfikacji. `infra/docker-compose.yml` zakłada standardowe porty — na tej maszynie do lokalnego developmentu trzeba by je zremapować (lokalna specyfika, nie coś do zmiany w repo).
 - **Brak dostępu do prawdziwej instancji Pterodactyla.** Cała weryfikacja Federation Layer jest zweryfikowana jednostkowo (mockowany `fetch`/DNS) i/lub realnym ruchem sieciowym do `https://example.com` (prawdziwe DNS/TCP/TLS/HTTP, ale nie prawdziwy Pterodactyl) i/lub ręcznie wstawionymi rekordami DB. Kod jest napisany zgodnie z ogólnie znanym, publicznie udokumentowanym kontraktem Pterodactyl Client/Application API v1 — **nie** zweryfikowanym względem istniejącej apki Flutter (ta w ogóle nie implementuje większości tych funkcji, potwierdzone przeszukaniem `lib/`) ani względem żywego panelu Pterodactyla, do którego nie ma dostępu w tym środowisku.
 
+## Status wdrożenia produkcyjnego (serwer 10.10.10.109)
+
+**Faktycznie wdrożone i zweryfikowane end-to-end na realnym serwerze** (nie tylko lokalnie) — `postgres`, `rabbitmq`, `control-plane-api`, `federation-worker`, `prometheus`, `grafana` wszystkie działają jako `pterocontrol-*` kontenery w `/opt/pterocontrol`, obok istniejącej, nietkniętej infrastruktury (nginx-main, cloudflaretunnel, portainer, pihole, unbound, RustDesk, Ollama, Redmine, Minecraft/Pterodactyl, phpMyAdmin, MariaDB, wlosek-strapi). Zweryfikowane realnie, nie założone:
+
+- DB/RabbitMQ: brak publikowanych portów hosta, `/health/ready` potwierdza `database:connected`, `rabbitmq:connected`; `federation-worker` potwierdzony w logach jako faktycznie skonsumowany z RabbitMQ (`Consuming from federation.worker`/`notifications.worker`), nie tylko "kontener działa".
+- Migracje: `prisma migrate deploy` uruchomiony, 17 oczekiwanych tabel istnieje.
+- Prometheus: target `control-plane-api` ma `health:"up"` z realnym `lastScrape` — genuinely scrapowany przez Docker DNS, nie `localhost`.
+- Grafana: datasource + dashboard `control-plane-api` provisionowane automatycznie z repo (bez ręcznego kroku).
+- Cloudflare Tunnel: istniejący, tokenowy tunel (`cloudflaretunnel`) ponownie użyty (bez drugiego `cloudflared`) — trasa `control-plane.wlosek.ovh` → `http://control-plane-api:3000` dodana w Cloudflare Dashboard przez użytkownika, potwierdzona przez rzeczywisty request przez internet (DNS + TLS terminowany przez Cloudflare + tunel + routing + realna odpowiedź z Express/Nest, nie tylko DNS). Pozostałe cztery istniejące trasy na tym samym tunelu (`wlosek.ovh`, `api-goodloop.wlosek.ovh`, `cms.wlosek.ovh`, `jenkins.wlosek.ovh`) potwierdzone jako nietknięte.
+- Pełny zestaw testów (25 unit + 3 e2e suite, `control-plane-api`; 11 unit suite, `federation-worker`) uruchomiony na serwerze przeciwko świeżemu `git clone` — 237/237 testów przechodzi.
+- Sekrety: `.env.prod` na serwerze, `600`, nigdy niewypisany w output ani nieskomitowany; `git status`/`git diff` na serwerze czyste.
+
+**Nadal nie zweryfikowane, świadomie odłożone — wymaga danych, których agent nie zgaduje:** integracja z realną instancją Pterodactyla (URL panelu + API key) potrzebna do faktycznego bootstrapu pierwszego tenanta i przetestowania auth/JWT/listy serwerów/bezpiecznej operacji power przez publiczny hostname — patrz "Znane ograniczenia środowiska" niżej, ten punkt się nie zmienił.
+
 ## Następny konkretny krok
 
-**Cała 12-punktowa lista uzgodniona z użytkownikiem na początku tej sesji jest ukończona.** Nie ma już z góry zaplanowanego "następnego kroku" — to, co zostało, to świadomie udokumentowane luki (patrz "Świadomie NIEkompletne" wyżej), z których żadna nie jest pilna/blokująca, oraz jeden realny krok, który wymaga samego użytkownika, nie kolejnej sesji autonomicznej pracy:
+**Cała 12-punktowa lista uzgodniona z użytkownikiem na początku tej sesji jest ukończona, a faktyczne wdrożenie produkcyjne (powyżej) zweryfikowane.** Jedyny pozostały krok do statusu `PRODUCTION READY` (w odróżnieniu od obecnego `READY FOR FINAL INTEGRATION`) wymaga samego użytkownika:
 
-1. **Faktyczne wdrożenie na serwerze użytkownika** (10.10.10.109) — `infra/DEPLOYMENT.md` opisuje dokładne kroki, ale część z nich (utworzenie tunelu w dashboardzie Cloudflare, wpisanie realnego tokena/domeny do `infra/.env.prod`) może wykonać tylko użytkownik, nie ten agent — brak dostępu do jego konta Cloudflare czy serwera. To nie jest "kolejna faza do zaimplementowania", tylko operacyjny krok do wykonania przez człowieka.
+1. **Dane realnej instancji Pterodactyla** (URL panelu + API key) — żeby faktycznie zbootstrapować pierwszego tenanta przez `POST /tenants` i zweryfikować auth/JWT/listę serwerów/bezpieczną operację power end-to-end przez `control-plane.wlosek.ovh`. Agent świadomie się zatrzymał na tym punkcie zamiast zgadywać dane logowania.
 
-Jeśli kolejna sesja autonomiczna ma czym się zająć, kandydaci (żaden nie jest z góry uzgodniony z użytkownikiem — wymagałby jego potwierdzenia, że to w ogóle pożądany kierunek, zanim zacząć, dokładnie jak przy production/deployment):
+Jeśli kolejna sesja autonomiczna ma czym się zająć, kandydaci (żaden nie jest z góry uzgodniony z użytkownikiem — wymagałby jego potwierdzenia, że to w ogóle pożądany kierunek, zanim zacząć):
 - Zamknięcie udokumentowanych luk z sekcji "Świadomie NIEkompletne" (np. endpoint zapraszania członków z inną rolą, `/metrics` dla `federation-worker`, E2E dla `federation-worker`, automatyzacja Flutter `integration_test`).
-- Weryfikacja całego Federation Layer (kontrakt API dla wielu modułów) względem **prawdziwej** instancji Pterodactyla, jeśli/gdy stanie się dostępna — to jedyne ograniczenie wymienione w "Znane ograniczenia środowiska", które nie jest kwestią decyzji, tylko dostępu.
 - Rozbudowa Flutter Control Plane mode o kolejne moduły (alerts/notifications/backups/schedules/itd. już istnieją na backendzie, nie mają jeszcze ekranu).
 
-Żadnego z powyższych nie zaczynać bez wyraźnego potwierdzenia użytkownika, że to jest to, czego chce — inaczej niż poprzednie 12 punktów, żadne z tego nie było jeszcze uzgodnione.
+Żadnego z powyższych nie zaczynać bez wyraźnego potwierdzenia użytkownika, że to jest to, czego chce.

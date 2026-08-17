@@ -121,3 +121,51 @@ manual "add datasource" step needed.
   revisiting if this ever needs to run on more than one host.
 - **No automatic TLS renewal to configure** — that's the whole point of
   the Cloudflare Tunnel approach; Cloudflare handles it at their edge.
+
+## 6. Running the test suite outside Docker
+
+`npm test` / `npm run test:e2e` do **not** work right after a bare
+`npm ci` at the repo root — found live running the full suite against
+this deployment. The app's own multi-stage `Dockerfile` builds are fine
+(they do this already), but a standalone `npm ci` skips two steps the
+Dockerfile does explicitly, and jest fails with TypeScript errors that
+look like missing types (`Module '"@prisma/client"' has no exported
+member 'Tenant'`) and unresolvable workspace imports (`Cannot find
+module '@pterocontrol/secrets'`) — neither is a real code problem, both
+are just steps that didn't run yet:
+
+```bash
+npm ci
+npm run build --workspace=@pterocontrol/pterodactyl-sdk
+npm run build --workspace=@pterocontrol/rabbitmq
+npm run build --workspace=@pterocontrol/secrets
+npx prisma generate --schema services/control-plane-api/prisma/schema.prisma
+
+npm test --workspace=services/control-plane-api
+npm run test:e2e --workspace=services/control-plane-api
+npm test --workspace=services/federation-worker
+```
+
+The three `packages/*` workspaces are consumed via their `dist/`
+output (`"main": "dist/index.js"` in each `package.json`), and Prisma's
+generated client only exists after `prisma generate` runs — the
+Dockerfile's `build` stage does both before compiling the app; a plain
+`npm ci` on its own does neither. `test:e2e` additionally needs Docker
+on `PATH` (it spins up its own throwaway, isolated Postgres +
+RabbitMQ — see `services/control-plane-api/test/global-setup.js` —
+never the ones this compose file runs, and never on the same ports).
+
+## Verified live on the reference deployment
+
+Confirmed end-to-end against this project's own target server (not
+just "container is running" — an actual internet → Cloudflare →
+tunnel → `control-plane-api:3000` request, checked against both sides'
+logs for errors):
+
+```bash
+curl -I https://control-plane.wlosek.ovh          # -> 404 (no root route; proves it reached Express)
+curl https://control-plane.wlosek.ovh/health/ready # -> {"status":"ok","dependencies":{"database":"connected","rabbitmq":"connected"}}
+```
+
+Full test suite (25 unit + 3 e2e suites, `control-plane-api`; 11 unit
+suites, `federation-worker`) passes: 237/237 tests, 0 failures.
