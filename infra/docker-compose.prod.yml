@@ -1,9 +1,9 @@
 # Production stack for the single-server-behind-a-Cloudflare-Tunnel
 # deployment the user described (private server, no public inbound ports
 # at all - Cloudflare terminates TLS at their edge and tunnels traffic in
-# over an outbound-only connection from `cloudflared`). See
-# infra/DEPLOYMENT.md for the manual steps this file alone can't do
-# (creating the tunnel, routing hostnames to internal services).
+# over an outbound-only connection from the server's own `cloudflared`).
+# See infra/DEPLOYMENT.md for the manual steps this file alone can't do
+# (routing a hostname to control-plane-api in the Cloudflare dashboard).
 #
 # Deliberately different from docker-compose.yml (local dev), not the same
 # file with tweaked values:
@@ -20,6 +20,20 @@
 #     Dockerfiles, not pulled from a registry - no registry/CI-publish
 #     step exists yet (a separate decision from "does the compose file
 #     work"), so `docker compose build` is required before `up`.
+#   - No `cloudflared` service. The target server already runs one
+#     long-lived, token-based tunnel container (shared by every app on
+#     that host, e.g. an existing "wlosek-strapi" is reached the same
+#     way) - running a second `cloudflared` would be a second, redundant
+#     tunnel to manage instead of one more route on the existing one.
+#     `control-plane-api`/`grafana` instead join the server's existing
+#     external `ingress` Docker network (same one the existing tunnel
+#     container and strapi are already on), so that tunnel can reach them
+#     by container name once a Public Hostname route is added for them in
+#     the Cloudflare dashboard - see infra/DEPLOYMENT.md. Confirmed live
+#     on the actual target server before writing this: `nginx-main` is
+#     not currently a reverse proxy for anything (two static sites only,
+#     no proxy_pass), and the tunnel is genuinely token-based (`tunnel
+#     run` + `TUNNEL_TOKEN`, no local ingress config file to edit).
 #
 # Usage: cp infra/.env.prod.example infra/.env.prod, fill it in, then
 #   docker compose -f infra/docker-compose.prod.yml --env-file infra/.env.prod build
@@ -93,9 +107,13 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    # No `ports:` - only cloudflared (same Docker network) and prometheus
-    # reach this service, both internally by service name. Nothing binds
-    # to the host's network interfaces at all.
+    # No `ports:` - reached over Docker networks only: `default` for
+    # prometheus's scrape, `ingress` for the server's existing
+    # cloudflared tunnel. Nothing binds to the host's network interfaces
+    # at all.
+    networks:
+      - default
+      - ingress
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/health || exit 1"]
       interval: 10s
@@ -118,23 +136,6 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-
-  # Outbound-only tunnel to Cloudflare's edge - no inbound port on this
-  # host needs to be opened for any of this to be publicly reachable.
-  # TUNNEL_TOKEN comes from the Cloudflare Zero Trust dashboard (Networks
-  # -> Tunnels -> create a tunnel, "Docker" connector type gives you this
-  # token directly) - which internal hostname each public route forwards
-  # to (control-plane-api:3000, grafana:3000) is configured in that same
-  # dashboard, not in this file. See infra/DEPLOYMENT.md.
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: pterocontrol-cloudflared
-    restart: unless-stopped
-    command: tunnel run
-    environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
-    depends_on:
-      - control-plane-api
 
   prometheus:
     image: prom/prometheus:latest
@@ -159,6 +160,22 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+    # On `ingress` too (optional but recommended) so the existing tunnel
+    # can also route a hostname straight to Grafana if you want it
+    # reachable - see infra/DEPLOYMENT.md. Never add a route for
+    # `prometheus:9090` itself; it has no auth of its own.
+    networks:
+      - default
+      - ingress
+
+networks:
+  default:
+  # Must already exist on the target host - created by/for the server's
+  # existing Cloudflare Tunnel setup, not by this compose file. `docker
+  # compose up` fails loudly if it doesn't exist, rather than silently
+  # creating a same-named-but-different network.
+  ingress:
+    external: true
 
 volumes:
   postgres_data:

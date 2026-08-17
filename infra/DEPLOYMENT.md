@@ -11,40 +11,51 @@ terminates TLS there and forwards matched requests down that tunnel to
 whichever internal service you configure. There is no Traefik, no
 certificate to renew, and no port 80/443 to open in a firewall.
 
-Steps 1-2 below happen in the Cloudflare dashboard, not in this repo —
-nothing in `docker-compose.prod.yml` can do them for you.
+Step 1 below happens in the Cloudflare dashboard, not in this repo —
+nothing in `docker-compose.prod.yml` can do it for you.
 
-## 1. Create the tunnel
+## 1. Reuse the server's existing tunnel — don't create a second one
 
-In the [Cloudflare Zero Trust dashboard](https://one.dash.cloudflare.com/):
-**Networks → Tunnels → Create a tunnel → Cloudflared → name it** (e.g.
-`pterocontrol`) **→ Docker** as the connector environment. Cloudflare
-shows you a token — copy it into `infra/.env.prod` as
-`CLOUDFLARE_TUNNEL_TOKEN` (see step 4). You do not need to run the
-`docker run` command Cloudflare suggests on that screen; the token is all
-`docker-compose.prod.yml`'s `cloudflared` service needs, and the compose
-file already has the right image/command.
+**This compose file has no `cloudflared` service.** The target server
+already runs one long-lived, token-based `cloudflared` container serving
+every app on that host (confirmed live before writing this: it runs
+`tunnel run` with a `TUNNEL_TOKEN` env var — routing rules live in the
+Cloudflare dashboard, not a local `config.yml` — and other apps on the
+box, e.g. an existing Strapi instance, reach it the same way this file
+sets up: by sharing its Docker network, not by running their own tunnel).
+Running a second `cloudflared` would mean a second tunnel to manage for
+no benefit — one more Public Hostname route on the existing tunnel does
+the same job.
 
-## 2. Route your domain to the internal services
+That existing tunnel's container is attached to an external Docker
+network — on the reference deployment this is named `ingress`, and
+`docker-compose.prod.yml` declares it as `external: true` for exactly
+that reason. **If your existing tunnel's network has a different name,
+change the `ingress:` network name in `docker-compose.prod.yml` (and the
+`networks:` list on the `control-plane-api`/`grafana` services) to match
+before running `up`** — `docker compose` fails loudly at startup if the
+named external network doesn't exist, it won't silently create a
+same-named-but-disconnected one.
 
-Still in the tunnel's configuration (**Public Hostname** tab), add one
-route per service you want reachable from the internet:
+In the [Cloudflare Zero Trust dashboard](https://one.dash.cloudflare.com/),
+open the existing tunnel's **Public Hostname** tab and add one route per
+service you want reachable from the internet:
 
 | Public hostname | Service type | URL |
 |---|---|---|
 | `control-plane.<your-domain>` | HTTP | `control-plane-api:3000` |
 | `grafana.<your-domain>` | HTTP | `grafana:3000` |
 
-`control-plane-api`/`grafana` here are the compose service names — DNS
-inside the tunnel's Docker network resolves them, no IP addresses
-involved. Do **not** add a route for `prometheus:9090` — Prometheus has
-no authentication of its own; it's only meant to be reached by Grafana
-over the internal network, never from the internet.
+`control-plane-api`/`grafana` here are the compose service names — once
+both containers are on the tunnel's network, Docker DNS resolves them, no
+IP addresses involved. Do **not** add a route for `prometheus:9090` —
+Prometheus has no authentication of its own; it's only meant to be
+reached by Grafana over the internal network, never from the internet.
 
 Cloudflare creates the DNS record for you when you add the route; you
 don't need to touch your domain's DNS panel separately.
 
-## 3. Generate secrets
+## 2. Generate secrets
 
 ```bash
 cd infra
@@ -53,16 +64,12 @@ cp .env.prod.example .env.prod
 
 Fill in `.env.prod` (never commit it — already covered by the repo's
 `.env.*` gitignore pattern). Every value that needs generating has the
-exact command in `.env.prod.example`'s own comments. Two that are easy to
-get wrong:
+exact command in `.env.prod.example`'s own comments. Easy to get wrong:
+`SECRETS_MASTER_KEY` and `JWT_SECRET` must be **different** values —
+never reuse one key for two cryptographic purposes (see
+`SecretsService`'s own doc comment in `packages/secrets`).
 
-- `SECRETS_MASTER_KEY` and `JWT_SECRET` must be **different** values —
-  never reuse one key for two cryptographic purposes (see
-  `SecretsService`'s own doc comment in `packages/secrets`).
-- `CLOUDFLARE_TUNNEL_TOKEN` is the token from step 1, not something you
-  generate yourself.
-
-## 4. Build and run
+## 3. Build and run
 
 ```bash
 cd infra
@@ -85,14 +92,14 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod ps
 curl https://control-plane.<your-domain>/health/ready
 ```
 
-## 5. Bootstrap the first tenant
+## 4. Bootstrap the first tenant
 
 `POST /tenants` is gated by `BOOTSTRAP_TOKEN` (see `.env.prod`) — call it
 once through the public hostname to create your first tenant + owner
 account, then treat that token as spent (rotate it on the next deploy if
 you're being careful — it has no other use).
 
-## 6. Grafana
+## 5. Grafana
 
 Reachable at `https://grafana.<your-domain>` once step 2's route is in
 place. First login is `admin` / whatever you set as
