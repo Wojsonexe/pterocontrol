@@ -20,6 +20,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The three packages/* workspaces are consumed via their dist/
+      # output (main/types point at dist/index.js in each package.json),
+      # and Prisma's generated client only exists after `prisma
+      # generate` runs - the Dockerfiles' build stage does both before
+      # compiling the apps (see services/*/Dockerfile), so CI has to
+      # match that or every workspace importing @pterocontrol/* or
+      # @prisma/client fails to resolve. Found live: this exact gap
+      # made every job in this file fail the first time it ever ran on
+      # a real GitHub Actions runner, despite passing locally against a
+      # throwaway container that (accidentally, at the time) always
+      # built these first.
+      - name: Build shared packages
+        run: |
+          npm run build --workspace=@pterocontrol/pterodactyl-sdk
+          npm run build --workspace=@pterocontrol/rabbitmq
+          npm run build --workspace=@pterocontrol/secrets
+
+      - name: Prisma generate
+        run: npx prisma generate --schema services/control-plane-api/prisma/schema.prisma
+
       - name: Typecheck (all workspaces)
         run: npm run typecheck --workspaces --if-present
 
@@ -42,6 +62,17 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # Same reason as the `backend` job above - control-plane-api's own
+      # E2E suite imports @pterocontrol/* and @prisma/client too.
+      - name: Build shared packages
+        run: |
+          npm run build --workspace=@pterocontrol/pterodactyl-sdk
+          npm run build --workspace=@pterocontrol/rabbitmq
+          npm run build --workspace=@pterocontrol/secrets
+
+      - name: Prisma generate
+        run: npx prisma generate --schema services/control-plane-api/prisma/schema.prisma
 
       # global-setup.js spins up its own throwaway Postgres+RabbitMQ via
       # `docker run` (same containers this whole project's manual "live

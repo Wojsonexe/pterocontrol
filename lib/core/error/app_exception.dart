@@ -25,25 +25,22 @@ sealed class AppException implements Exception {
 /// The request never reached the server (no internet, DNS failure, refused
 /// connection, ...).
 final class NetworkException extends AppException {
-  const NetworkException({Object? cause})
+  const NetworkException({super.cause})
       : super(
           'Nie udało się połączyć z serwerem. Sprawdź adres instancji i połączenie z internetem.',
-          cause: cause,
         );
 }
 
 /// The server did not respond within the configured timeout.
 final class RequestTimeoutException extends AppException {
-  const RequestTimeoutException({Object? cause})
-      : super('Serwer nie odpowiedział w wyznaczonym czasie.', cause: cause);
+  const RequestTimeoutException({super.cause}) : super('Serwer nie odpowiedział w wyznaczonym czasie.');
 }
 
 /// The stored credentials were rejected (HTTP 401).
 final class UnauthorizedException extends AppException {
-  const UnauthorizedException({Object? cause})
+  const UnauthorizedException({super.cause})
       : super(
           'Sesja wygasła lub klucz API jest nieprawidłowy.',
-          cause: cause,
           statusCode: 401,
         );
 }
@@ -51,47 +48,43 @@ final class UnauthorizedException extends AppException {
 /// The credentials were valid but do not grant access to this resource
 /// (HTTP 403).
 final class ForbiddenException extends AppException {
-  const ForbiddenException({Object? cause})
+  const ForbiddenException({super.cause})
       : super(
           'Brak uprawnień do wykonania tej operacji.',
-          cause: cause,
           statusCode: 403,
         );
 }
 
 /// The requested resource does not exist (HTTP 404).
 final class NotFoundException extends AppException {
-  const NotFoundException({Object? cause})
-      : super('Nie znaleziono zasobu.', cause: cause, statusCode: 404);
+  const NotFoundException({super.cause}) : super('Nie znaleziono zasobu.', statusCode: 404);
 }
 
 /// The request conflicts with the current state of the resource (HTTP
 /// 409) — e.g. the Files API rejecting a rename/move/create-folder
 /// because something already exists at the destination path.
 final class ConflictException extends AppException {
-  const ConflictException({Object? cause})
-      : super('Element o tej nazwie już istnieje.', cause: cause, statusCode: 409);
+  const ConflictException({super.cause})
+      : super('Element o tej nazwie już istnieje.', statusCode: 409);
 }
 
 /// The request was well-formed but failed validation (HTTP 422) — e.g.
 /// an invalid file/folder name, a path the Files API rejects.
 final class ValidationException extends AppException {
-  const ValidationException({Object? cause})
-      : super('Nieprawidłowe dane. Sprawdź nazwę i spróbuj ponownie.', cause: cause, statusCode: 422);
+  const ValidationException({super.cause})
+      : super('Nieprawidłowe dane. Sprawdź nazwę i spróbuj ponownie.', statusCode: 422);
 }
 
 /// The server responded with an unexpected error (HTTP 4xx/5xx not covered
 /// by a more specific exception above).
 final class ServerException extends AppException {
-  const ServerException({Object? cause, int? statusCode})
-      : super('Serwer zwrócił nieoczekiwany błąd.', cause: cause, statusCode: statusCode);
+  const ServerException({super.cause, super.statusCode}) : super('Serwer zwrócił nieoczekiwany błąd.');
 }
 
 /// The response was received but could not be parsed into the expected
 /// shape.
 final class InvalidResponseException extends AppException {
-  const InvalidResponseException({Object? cause})
-      : super('Odpowiedź serwera ma nieoczekiwany format.', cause: cause);
+  const InvalidResponseException({super.cause}) : super('Odpowiedź serwera ma nieoczekiwany format.');
 }
 
 /// A local persistence operation (instance list, preferences, ...) failed.
@@ -105,10 +98,10 @@ final class StorageException extends AppException {
 /// distinct from [UnknownException] specifically so a cancel does not
 /// read as "something went wrong" in the UI.
 final class CancelledException extends AppException {
-  const CancelledException({Object? cause}) : super('Anulowano.', cause: cause);
+  const CancelledException({super.cause}) : super('Anulowano.');
 }
 
 /// Fallback for anything that does not fit the categories above.
 final class UnknownException extends AppException {
-  const UnknownException({Object? cause}) : super('Wystąpił nieoczekiwany błąd.', cause: cause);
+  const UnknownException({super.cause}) : super('Wystąpił nieoczekiwany błąd.');
 }
