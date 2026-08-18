@@ -81,8 +81,14 @@ module.exports = async function globalSetup() {
   fs.writeFileSync(ENV_FILE, envContent, 'utf8');
 };
 
+// 90s, not 30s: found live on GitHub Actions' shared runners - a cold
+// pull of rabbitmq:3-management-alpine plus its own Erlang VM/plugin
+// boot time routinely exceeds 30s there, even though 30s was plenty on
+// a dev machine with the image already cached. Postgres gets the same
+// generous deadline for consistency, even though it wasn't the one that
+// actually timed out.
 async function waitForPostgres() {
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     try {
       sh(`docker exec ${POSTGRES_CONTAINER} pg_isready -U pterocontrol_e2e`);
@@ -95,7 +101,7 @@ async function waitForPostgres() {
 }
 
 async function waitForRabbitMq() {
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     try {
       sh(`docker exec ${RABBITMQ_CONTAINER} rabbitmq-diagnostics -q ping`);
