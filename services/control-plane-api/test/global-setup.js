@@ -55,20 +55,32 @@ module.exports = async function globalSetup() {
   );
   sh(
     `docker run -d --name ${RABBITMQ_CONTAINER} ` +
-      // Debian-based image, not -alpine: found live on GitHub Actions -
-      // the alpine variant's entrypoint refuses to boot with "Error
-      // when reading /var/lib/rabbitmq/.erlang.cookie: eacces" on that
-      // runner's storage driver, and it's specific to how that image's
-      // musl/minimal userspace interacts with the runner's overlay2
-      // driver - neither a longer readiness timeout, an anonymous
-      // volume for /var/lib/rabbitmq, nor an explicit
-      // RABBITMQ_ERLANG_COOKIE changed the outcome (all three hit the
-      // exact same error - the file's permissions are wrong at a lower
-      // level than any of those touch). The Debian-based image doesn't
-      // hit this at all.
+      // "Error when reading /var/lib/rabbitmq/.erlang.cookie: eacces"
+      // on GitHub Actions - four different mitigations (longer
+      // timeout, anonymous volume, explicit RABBITMQ_ERLANG_COOKIE,
+      // Debian instead of alpine image) all hit the byte-identical
+      // error, which rules out the image/config as the cause. Left as
+      // rabbitmq:3-management (Debian) since that's at least no worse
+      // than alpine. See the immediate post-run diagnostic below -
+      // capturing live container state (ls -la, id) in the brief
+      // window before it crashes, instead of guessing a fifth fix.
       '-e RABBITMQ_DEFAULT_USER=pterocontrol_e2e -e RABBITMQ_DEFAULT_PASS=pterocontrol_e2e ' +
       `-p 127.0.0.1:${RABBITMQ_PORT}:5672 -p 127.0.0.1:${RABBITMQ_MGMT_PORT}:15672 rabbitmq:3-management`,
   );
+
+  // TEMPORARY diagnostic, not a fix - captures live state in the ~10s
+  // window before the container crashes (see the docker run comment
+  // above), since docker exec against an already-exited container
+  // fails cleanly and tells us nothing. Remove once the real cause is
+  // identified.
+  try {
+    const ownership = sh(`docker exec ${RABBITMQ_CONTAINER} ls -la /var/lib/rabbitmq`);
+    const whoami = sh(`docker exec ${RABBITMQ_CONTAINER} id`);
+    const mounts = sh(`docker exec ${RABBITMQ_CONTAINER} mount`).split('\n').filter((l) => l.includes('rabbitmq')).join('\n');
+    console.error(`\n--- RabbitMQ pre-crash diagnostic ---\nid: ${whoami.trim()}\nls -la /var/lib/rabbitmq:\n${ownership}\nmounts:\n${mounts}\n--- end diagnostic ---\n`);
+  } catch (preCrashError) {
+    console.error(`\n--- RabbitMQ pre-crash diagnostic: exec failed (container likely already exited): ${String(preCrashError)} ---\n`);
+  }
 
   await waitForPostgres();
   await waitForRabbitMq();
