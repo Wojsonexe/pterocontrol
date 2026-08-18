@@ -55,6 +55,17 @@ module.exports = async function globalSetup() {
   );
   sh(
     `docker run -d --name ${RABBITMQ_CONTAINER} ` +
+      // Anonymous volume for /var/lib/rabbitmq, not the image's own
+      // overlay layer: found live on GitHub Actions - the baked-in
+      // .erlang.cookie file's permissions come out wrong on that
+      // runner's storage driver, and RabbitMQ's own strict 0600 check
+      // on it refuses to boot at all ("Error when reading
+      // /var/lib/rabbitmq/.erlang.cookie: eacces", not a startup-speed
+      // problem - this is why raising the readiness timeout alone
+      // didn't help). A fresh anonymous volume gets correctly-owned
+      // permissions from Docker's volume driver instead of inheriting
+      // the image layer's.
+      '-v /var/lib/rabbitmq ' +
       '-e RABBITMQ_DEFAULT_USER=pterocontrol_e2e -e RABBITMQ_DEFAULT_PASS=pterocontrol_e2e ' +
       `-p 127.0.0.1:${RABBITMQ_PORT}:5672 -p 127.0.0.1:${RABBITMQ_MGMT_PORT}:15672 rabbitmq:3-management-alpine`,
   );
