@@ -1,21 +1,37 @@
 /**
  * Jest globalSetup for the E2E suite (`npm run test:e2e`).
  *
- * Spins up the same kind of throwaway Docker Postgres+RabbitMQ this whole
- * session used for every manual "live verification" pass, but as a
- * repeatable script instead of one-off commands - the point of this phase
- * (see IMPLEMENTATION_STATUS.md, "Testy E2E") is exactly to turn that
- * manual methodology into something anyone (or CI) can run without having
- * read this file's history first.
+ * Two modes:
+ * - Local (default): spins up the same kind of throwaway Docker
+ *   Postgres+RabbitMQ this whole project's manual "live verification"
+ *   methodology used, via a plain `docker run`.
+ * - CI (`process.env.CI === 'true'`, the standard convention GitHub
+ *   Actions itself sets): Postgres/RabbitMQ are instead declared as
+ *   the backend-e2e job's own `services:` in .github/workflows/ci.yml,
+ *   health-gated by GitHub Actions' own orchestration before this
+ *   script even runs - not spun up here at all. Found live: a raw
+ *   `docker run` for RabbitMQ specifically hits "Error when reading
+ *   /var/lib/rabbitmq/.erlang.cookie: eacces" on GitHub's hosted
+ *   runners no matter what (longer timeout, anonymous volume, explicit
+ *   RABBITMQ_ERLANG_COOKIE, Debian instead of alpine image, explicit
+ *   re-chown before start - five different mitigations, byte-identical
+ *   error every time), which points at something about how that
+ *   runner's Docker daemon handles a container-internal path becoming
+ *   its own mount - `services:` containers are orchestrated by GitHub
+ *   Actions' own runner code, a different mechanism entirely, and
+ *   don't hit this.
  *
- * Requires Docker on PATH. Fails loudly (not silently skipped) if it
- * isn't available - a security/correctness-relevant test suite that
- * quietly no-ops is worse than one that refuses to run.
+ * Local mode requires Docker on PATH and fails loudly (not silently
+ * skipped) if it isn't available - a security/correctness-relevant
+ * test suite that quietly no-ops is worse than one that refuses to run.
  */
 const { execSync } = require('child_process');
 const fs = require('fs');
+const net = require('net');
 const path = require('path');
 const crypto = require('crypto');
+
+const IS_CI = process.env.CI === 'true';
 
 const POSTGRES_CONTAINER = 'pterocontrol-e2e-postgres';
 const POSTGRES_PORT = 5479;
@@ -33,56 +49,43 @@ function randomBase64Key() {
 }
 
 module.exports = async function globalSetup() {
-  try {
-    sh('docker info');
-  } catch {
-    throw new Error(
-      'Docker is required to run the E2E suite (it spins up a throwaway Postgres+RabbitMQ) - Docker does not appear to be running or installed.',
+  if (IS_CI) {
+    // Already running (and already health-checked) as the job's own
+    // services: containers - see .github/workflows/ci.yml. Only a
+    // lightweight TCP-reachability check here as a safety net, not a
+    // real readiness check.
+    await waitForTcp('127.0.0.1', POSTGRES_PORT, 'Postgres');
+    await waitForTcp('127.0.0.1', RABBITMQ_PORT, 'RabbitMQ');
+  } else {
+    try {
+      sh('docker info');
+    } catch {
+      throw new Error(
+        'Docker is required to run the E2E suite (it spins up a throwaway Postgres+RabbitMQ) - Docker does not appear to be running or installed.',
+      );
+    }
+
+    // Clean up any leftovers from a previous run that crashed before teardown.
+    try {
+      sh(`docker rm -f ${POSTGRES_CONTAINER} ${RABBITMQ_CONTAINER}`);
+    } catch {
+      // Fine if they didn't exist.
+    }
+
+    sh(
+      `docker run -d --name ${POSTGRES_CONTAINER} ` +
+        '-e POSTGRES_USER=pterocontrol_e2e -e POSTGRES_PASSWORD=pterocontrol_e2e -e POSTGRES_DB=pterocontrol_e2e ' +
+        `-p 127.0.0.1:${POSTGRES_PORT}:5432 postgres:16-alpine`,
     );
+    sh(
+      `docker run -d --name ${RABBITMQ_CONTAINER} ` +
+        '-e RABBITMQ_DEFAULT_USER=pterocontrol_e2e -e RABBITMQ_DEFAULT_PASS=pterocontrol_e2e ' +
+        `-p 127.0.0.1:${RABBITMQ_PORT}:5672 -p 127.0.0.1:${RABBITMQ_MGMT_PORT}:15672 rabbitmq:3-management-alpine`,
+    );
+
+    await waitForPostgres();
+    await waitForRabbitMq();
   }
-
-  // Clean up any leftovers from a previous run that crashed before teardown.
-  try {
-    sh(`docker rm -f ${POSTGRES_CONTAINER} ${RABBITMQ_CONTAINER}`);
-  } catch {
-    // Fine if they didn't exist.
-  }
-
-  sh(
-    `docker run -d --name ${POSTGRES_CONTAINER} ` +
-      '-e POSTGRES_USER=pterocontrol_e2e -e POSTGRES_PASSWORD=pterocontrol_e2e -e POSTGRES_DB=pterocontrol_e2e ' +
-      `-p 127.0.0.1:${POSTGRES_PORT}:5432 postgres:16-alpine`,
-  );
-  sh(
-    `docker run -d --name ${RABBITMQ_CONTAINER} ` +
-      // "Error when reading /var/lib/rabbitmq/.erlang.cookie: eacces"
-      // on GitHub Actions - root cause found live via a pre-crash
-      // diagnostic (ls -la/id/mount captured in the container's brief
-      // window before it crashes): on that runner, /var/lib/rabbitmq
-      // is its own ext4 mount (`/dev/root on /var/lib/rabbitmq type
-      // ext4`), not part of the container's normal overlay filesystem
-      // - a runner-environment quirk unrelated to the image (four
-      // earlier mitigations - longer timeout, anonymous volume,
-      // explicit RABBITMQ_ERLANG_COOKIE, Debian instead of alpine
-      // image - all hit the byte-identical error, ruling out the
-      // image/config as the cause). The directory itself already
-      // shows correct rabbitmq:rabbitmq ownership at the mount level,
-      // but whatever mounted it doesn't preserve that all the way
-      // through for the entrypoint's own later chown/file creation.
-      // Overriding the entrypoint to explicitly re-chown right before
-      // rabbitmq-server starts sidesteps that regardless of why it's
-      // wrong - the default entrypoint already runs its own similar
-      // chown internally as root before dropping to the rabbitmq
-      // user, so this is strictly redundant on a normal host, only
-      // load-bearing here.
-      '-e RABBITMQ_DEFAULT_USER=pterocontrol_e2e -e RABBITMQ_DEFAULT_PASS=pterocontrol_e2e ' +
-      `-p 127.0.0.1:${RABBITMQ_PORT}:5672 -p 127.0.0.1:${RABBITMQ_MGMT_PORT}:15672 ` +
-      '--entrypoint sh rabbitmq:3-management ' +
-      '-c "chown -R rabbitmq:rabbitmq /var/lib/rabbitmq && exec docker-entrypoint.sh rabbitmq-server"',
-  );
-
-  await waitForPostgres();
-  await waitForRabbitMq();
 
   const databaseUrl = `postgresql://pterocontrol_e2e:pterocontrol_e2e@localhost:${POSTGRES_PORT}/pterocontrol_e2e?schema=public`;
   const rabbitmqUrl = `amqp://pterocontrol_e2e:pterocontrol_e2e@localhost:${RABBITMQ_PORT}`;
@@ -151,4 +154,24 @@ async function waitForRabbitMq() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// CI-only path: services: containers are already health-gated by
+// GitHub Actions itself before this step runs, so this is a brief
+// safety net (port-forwarding settling, DNS), not the real readiness
+// check.
+async function waitForTcp(host, port, label) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const reachable = await new Promise((resolve) => {
+      const socket = net.connect({ host, port }, () => {
+        socket.end();
+        resolve(true);
+      });
+      socket.on('error', () => resolve(false));
+    });
+    if (reachable) return;
+    await sleep(500);
+  }
+  throw new Error(`Timed out waiting for ${label} to become reachable on ${host}:${port}.`);
 }
