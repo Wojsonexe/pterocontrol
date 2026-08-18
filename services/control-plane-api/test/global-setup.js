@@ -55,20 +55,19 @@ module.exports = async function globalSetup() {
   );
   sh(
     `docker run -d --name ${RABBITMQ_CONTAINER} ` +
-      // Found live on GitHub Actions: RabbitMQ's entrypoint refuses to
-      // boot with "Error when reading /var/lib/rabbitmq/.erlang.cookie:
-      // eacces" on that runner's storage driver (not a startup-speed
-      // problem - raising the readiness timeout didn't help, and
-      // neither did an anonymous volume for /var/lib/rabbitmq, which
-      // hit the exact same error). Setting RABBITMQ_ERLANG_COOKIE
-      // explicitly takes a different code path in the image's
-      // entrypoint script: it WRITES that value into .erlang.cookie
-      // itself (with correct ownership/mode, while still running with
-      // the permissions to do so) instead of relying on the value/
-      // permissions already baked into the image layer.
-      `-e RABBITMQ_ERLANG_COOKIE=${randomBase64Key()} ` +
+      // Debian-based image, not -alpine: found live on GitHub Actions -
+      // the alpine variant's entrypoint refuses to boot with "Error
+      // when reading /var/lib/rabbitmq/.erlang.cookie: eacces" on that
+      // runner's storage driver, and it's specific to how that image's
+      // musl/minimal userspace interacts with the runner's overlay2
+      // driver - neither a longer readiness timeout, an anonymous
+      // volume for /var/lib/rabbitmq, nor an explicit
+      // RABBITMQ_ERLANG_COOKIE changed the outcome (all three hit the
+      // exact same error - the file's permissions are wrong at a lower
+      // level than any of those touch). The Debian-based image doesn't
+      // hit this at all.
       '-e RABBITMQ_DEFAULT_USER=pterocontrol_e2e -e RABBITMQ_DEFAULT_PASS=pterocontrol_e2e ' +
-      `-p 127.0.0.1:${RABBITMQ_PORT}:5672 -p 127.0.0.1:${RABBITMQ_MGMT_PORT}:15672 rabbitmq:3-management-alpine`,
+      `-p 127.0.0.1:${RABBITMQ_PORT}:5672 -p 127.0.0.1:${RABBITMQ_MGMT_PORT}:15672 rabbitmq:3-management`,
   );
 
   await waitForPostgres();
