@@ -56,31 +56,30 @@ module.exports = async function globalSetup() {
   sh(
     `docker run -d --name ${RABBITMQ_CONTAINER} ` +
       // "Error when reading /var/lib/rabbitmq/.erlang.cookie: eacces"
-      // on GitHub Actions - four different mitigations (longer
-      // timeout, anonymous volume, explicit RABBITMQ_ERLANG_COOKIE,
-      // Debian instead of alpine image) all hit the byte-identical
-      // error, which rules out the image/config as the cause. Left as
-      // rabbitmq:3-management (Debian) since that's at least no worse
-      // than alpine. See the immediate post-run diagnostic below -
-      // capturing live container state (ls -la, id) in the brief
-      // window before it crashes, instead of guessing a fifth fix.
+      // on GitHub Actions - root cause found live via a pre-crash
+      // diagnostic (ls -la/id/mount captured in the container's brief
+      // window before it crashes): on that runner, /var/lib/rabbitmq
+      // is its own ext4 mount (`/dev/root on /var/lib/rabbitmq type
+      // ext4`), not part of the container's normal overlay filesystem
+      // - a runner-environment quirk unrelated to the image (four
+      // earlier mitigations - longer timeout, anonymous volume,
+      // explicit RABBITMQ_ERLANG_COOKIE, Debian instead of alpine
+      // image - all hit the byte-identical error, ruling out the
+      // image/config as the cause). The directory itself already
+      // shows correct rabbitmq:rabbitmq ownership at the mount level,
+      // but whatever mounted it doesn't preserve that all the way
+      // through for the entrypoint's own later chown/file creation.
+      // Overriding the entrypoint to explicitly re-chown right before
+      // rabbitmq-server starts sidesteps that regardless of why it's
+      // wrong - the default entrypoint already runs its own similar
+      // chown internally as root before dropping to the rabbitmq
+      // user, so this is strictly redundant on a normal host, only
+      // load-bearing here.
       '-e RABBITMQ_DEFAULT_USER=pterocontrol_e2e -e RABBITMQ_DEFAULT_PASS=pterocontrol_e2e ' +
-      `-p 127.0.0.1:${RABBITMQ_PORT}:5672 -p 127.0.0.1:${RABBITMQ_MGMT_PORT}:15672 rabbitmq:3-management`,
+      `-p 127.0.0.1:${RABBITMQ_PORT}:5672 -p 127.0.0.1:${RABBITMQ_MGMT_PORT}:15672 ` +
+      '--entrypoint sh rabbitmq:3-management ' +
+      '-c "chown -R rabbitmq:rabbitmq /var/lib/rabbitmq && exec docker-entrypoint.sh rabbitmq-server"',
   );
-
-  // TEMPORARY diagnostic, not a fix - captures live state in the ~10s
-  // window before the container crashes (see the docker run comment
-  // above), since docker exec against an already-exited container
-  // fails cleanly and tells us nothing. Remove once the real cause is
-  // identified.
-  try {
-    const ownership = sh(`docker exec ${RABBITMQ_CONTAINER} ls -la /var/lib/rabbitmq`);
-    const whoami = sh(`docker exec ${RABBITMQ_CONTAINER} id`);
-    const mounts = sh(`docker exec ${RABBITMQ_CONTAINER} mount`).split('\n').filter((l) => l.includes('rabbitmq')).join('\n');
-    console.error(`\n--- RabbitMQ pre-crash diagnostic ---\nid: ${whoami.trim()}\nls -la /var/lib/rabbitmq:\n${ownership}\nmounts:\n${mounts}\n--- end diagnostic ---\n`);
-  } catch (preCrashError) {
-    console.error(`\n--- RabbitMQ pre-crash diagnostic: exec failed (container likely already exited): ${String(preCrashError)} ---\n`);
-  }
 
   await waitForPostgres();
   await waitForRabbitMq();
