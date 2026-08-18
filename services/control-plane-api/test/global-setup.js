@@ -55,17 +55,18 @@ module.exports = async function globalSetup() {
   );
   sh(
     `docker run -d --name ${RABBITMQ_CONTAINER} ` +
-      // Anonymous volume for /var/lib/rabbitmq, not the image's own
-      // overlay layer: found live on GitHub Actions - the baked-in
-      // .erlang.cookie file's permissions come out wrong on that
-      // runner's storage driver, and RabbitMQ's own strict 0600 check
-      // on it refuses to boot at all ("Error when reading
-      // /var/lib/rabbitmq/.erlang.cookie: eacces", not a startup-speed
-      // problem - this is why raising the readiness timeout alone
-      // didn't help). A fresh anonymous volume gets correctly-owned
-      // permissions from Docker's volume driver instead of inheriting
-      // the image layer's.
-      '-v /var/lib/rabbitmq ' +
+      // Found live on GitHub Actions: RabbitMQ's entrypoint refuses to
+      // boot with "Error when reading /var/lib/rabbitmq/.erlang.cookie:
+      // eacces" on that runner's storage driver (not a startup-speed
+      // problem - raising the readiness timeout didn't help, and
+      // neither did an anonymous volume for /var/lib/rabbitmq, which
+      // hit the exact same error). Setting RABBITMQ_ERLANG_COOKIE
+      // explicitly takes a different code path in the image's
+      // entrypoint script: it WRITES that value into .erlang.cookie
+      // itself (with correct ownership/mode, while still running with
+      // the permissions to do so) instead of relying on the value/
+      // permissions already baked into the image layer.
+      `-e RABBITMQ_ERLANG_COOKIE=${randomBase64Key()} ` +
       '-e RABBITMQ_DEFAULT_USER=pterocontrol_e2e -e RABBITMQ_DEFAULT_PASS=pterocontrol_e2e ' +
       `-p 127.0.0.1:${RABBITMQ_PORT}:5672 -p 127.0.0.1:${RABBITMQ_MGMT_PORT}:15672 rabbitmq:3-management-alpine`,
   );
