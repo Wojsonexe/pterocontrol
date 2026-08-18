@@ -81,12 +81,22 @@ module.exports = async function globalSetup() {
   fs.writeFileSync(ENV_FILE, envContent, 'utf8');
 };
 
-// 90s, not 30s: found live on GitHub Actions' shared runners - a cold
-// pull of rabbitmq:3-management-alpine plus its own Erlang VM/plugin
-// boot time routinely exceeds 30s there, even though 30s was plenty on
-// a dev machine with the image already cached. Postgres gets the same
-// generous deadline for consistency, even though it wasn't the one that
-// actually timed out.
+// 90s (was 30s - still not enough for RabbitMQ on GitHub Actions, see
+// diagnostics() below) covers a cold image pull plus normal startup on
+// a dev machine or CI runner. If a container is actually crash-looping
+// rather than just slow, waiting longer only delays finding that out -
+// diagnostics() on final timeout captures docker ps/logs so the failure
+// message says WHY, not just THAT it timed out.
+function diagnostics(containerName) {
+  try {
+    const status = sh(`docker inspect -f "{{.State.Status}} exitCode={{.State.ExitCode}}" ${containerName}`);
+    const logs = sh(`docker logs --tail 30 ${containerName} 2>&1`);
+    return `\n--- docker inspect: ${status.trim()} ---\n--- docker logs (last 30 lines) ---\n${logs}`;
+  } catch (diagError) {
+    return `\n(could not collect diagnostics: ${String(diagError)})`;
+  }
+}
+
 async function waitForPostgres() {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
@@ -97,7 +107,9 @@ async function waitForPostgres() {
       await sleep(500);
     }
   }
-  throw new Error('Timed out waiting for the E2E Postgres container to become ready.');
+  throw new Error(
+    `Timed out waiting for the E2E Postgres container to become ready.${diagnostics(POSTGRES_CONTAINER)}`,
+  );
 }
 
 async function waitForRabbitMq() {
@@ -110,7 +122,9 @@ async function waitForRabbitMq() {
       await sleep(500);
     }
   }
-  throw new Error('Timed out waiting for the E2E RabbitMQ container to become ready.');
+  throw new Error(
+    `Timed out waiting for the E2E RabbitMQ container to become ready.${diagnostics(RABBITMQ_CONTAINER)}`,
+  );
 }
 
 function sleep(ms) {
