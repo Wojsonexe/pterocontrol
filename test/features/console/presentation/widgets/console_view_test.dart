@@ -47,6 +47,15 @@ void main() {
       expect(find.text('Łączenie…'), findsOneWidget);
     });
 
+    testWidgets('shows "Uwierzytelnianie…" while authenticating', (tester) async {
+      final repository = FakeConsoleRepository();
+      await _pump(tester, repository);
+      repository.emitConnectionState(ConsoleConnectionState.authenticating);
+      await tester.pump();
+
+      expect(find.text('Uwierzytelnianie…'), findsOneWidget);
+    });
+
     testWidgets('shows "Połączono" once connected', (tester) async {
       final repository = FakeConsoleRepository();
       await _pump(tester, repository);

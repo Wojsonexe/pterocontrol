@@ -28,6 +28,7 @@ import '../../application/server_runtime_sync_controller.dart';
 import '../../domain/server.dart';
 import '../../domain/server_power_state.dart';
 import '../../domain/server_runtime_state.dart';
+import '../../../files/presentation/screens/file_manager_screen.dart';
 import '../widgets/effective_server_status.dart';
 import '../widgets/power_state_chip.dart';
 import '../widgets/server_power_actions.dart';
@@ -196,7 +197,7 @@ class _ServerDetailContentState extends ConsumerState<_ServerDetailContent> {
           children: [
             _OverviewTab(instanceId: instanceId, server: server),
             ConsoleView(instanceId: instanceId, serverIdentifier: server.identifier, fullscreen: true),
-            const _FilesTab(),
+            _FilesTab(instanceId: instanceId, server: server),
             const _BackupsTab(),
             _ServerSettingsTab(server: server),
           ],
@@ -401,15 +402,75 @@ class _TrendRow extends StatelessWidget {
   }
 }
 
-class _FilesTab extends StatelessWidget {
-  const _FilesTab();
+/// `TabBarView` builds every tab's widget immediately when
+/// `ServerDetailScreen` opens, regardless of which one is selected (see
+/// this file's own class doc comment, "built eagerly by `TabBarView`") —
+/// relied on deliberately for [ConsoleView]. The file manager has no such
+/// reason to fetch anything before the user has ever opened this tab, so
+/// it stays behind this guard: nothing under [child] is built (and so
+/// `FileManagerController` is never created, and no `GET .../files/list`
+/// request ever fires) until the Files tab has been selected at least
+/// once. [AutomaticKeepAliveClientMixin] then keeps it mounted after
+/// that, matching every other tab's always-alive behavior once visited.
+class _LazyTab extends StatefulWidget {
+  const _LazyTab({required this.tabIndex, required this.child});
+
+  final int tabIndex;
+  final Widget child;
+
+  @override
+  State<_LazyTab> createState() => _LazyTabState();
+}
+
+class _LazyTabState extends State<_LazyTab> with AutomaticKeepAliveClientMixin {
+  bool _everVisible = false;
+  TabController? _controller;
+
+  @override
+  bool get wantKeepAlive => _everVisible;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final controller = DefaultTabController.of(context);
+    if (_controller != controller) {
+      _controller?.removeListener(_handleTabChange);
+      _controller = controller..addListener(_handleTabChange);
+      _handleTabChange();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.removeListener(_handleTabChange);
+    super.dispose();
+  }
+
+  void _handleTabChange() {
+    if (_everVisible || _controller?.index != widget.tabIndex) return;
+    setState(() => _everVisible = true);
+  }
 
   @override
   Widget build(BuildContext context) {
-    return const ComingSoonView(
-      icon: Icons.folder_outlined,
-      title: 'Menedżer plików',
-      message: 'Przeglądanie, edycja i przesyłanie plików serwera pojawi się w kolejnej aktualizacji.',
+    super.build(context);
+    return _everVisible ? widget.child : const SizedBox.shrink();
+  }
+}
+
+class _FilesTab extends StatelessWidget {
+  const _FilesTab({required this.instanceId, required this.server});
+
+  final String instanceId;
+  final Server server;
+
+  static const _tabIndex = 2;
+
+  @override
+  Widget build(BuildContext context) {
+    return _LazyTab(
+      tabIndex: _tabIndex,
+      child: FileManagerScreen(instanceId: instanceId, serverIdentifier: server.identifier),
     );
   }
 }

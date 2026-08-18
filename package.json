@@ -1,0 +1,10 @@
+{
+  "name": "pterocontrol-control-plane",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Pterocontrol Control Plane — backend workspace (obok istniejącej aplikacji Flutter w tym samym repo).",
+  "workspaces": [
+    "services/*",
+    "packages/*"
+  ]
+}

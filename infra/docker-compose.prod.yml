@@ -1,0 +1,193 @@
+# Production stack for the single-server-behind-a-Cloudflare-Tunnel
+# deployment the user described (private server, no public inbound ports
+# at all - Cloudflare terminates TLS at their edge and tunnels traffic in
+# over an outbound-only connection from the server's own `cloudflared`).
+# See infra/DEPLOYMENT.md for the manual steps this file alone can't do
+# (routing a hostname to control-plane-api in the Cloudflare dashboard).
+#
+# Deliberately different from docker-compose.yml (local dev), not the same
+# file with tweaked values:
+#   - No `redis` service. Confirmed unused anywhere in the actual
+#     implementation (grepped the whole workspace) - RabbitMQ is the real
+#     background-job transport (see IMPLEMENTATION_STATUS.md, FAZA 9a/9b),
+#     Redis in the dev compose is a leftover from before that decision.
+#     Not carried forward here.
+#   - Postgres/RabbitMQ publish NO host ports at all, not even
+#     127.0.0.1:... - the dev compose's loopback-only binding exists so a
+#     human on that machine can connect a DB client; in production nothing
+#     outside this compose network needs to reach them directly.
+#   - control-plane-api/federation-worker are built from this repo's own
+#     Dockerfiles, not pulled from a registry - no registry/CI-publish
+#     step exists yet (a separate decision from "does the compose file
+#     work"), so `docker compose build` is required before `up`.
+#   - No `cloudflared` service. The target server already runs one
+#     long-lived, token-based tunnel container (shared by every app on
+#     that host, e.g. an existing "wlosek-strapi" is reached the same
+#     way) - running a second `cloudflared` would be a second, redundant
+#     tunnel to manage instead of one more route on the existing one.
+#     `control-plane-api`/`grafana` instead join the server's existing
+#     external `ingress` Docker network (same one the existing tunnel
+#     container and strapi are already on), so that tunnel can reach them
+#     by container name once a Public Hostname route is added for them in
+#     the Cloudflare dashboard - see infra/DEPLOYMENT.md. Confirmed live
+#     on the actual target server before writing this: `nginx-main` is
+#     not currently a reverse proxy for anything (two static sites only,
+#     no proxy_pass), and the tunnel is genuinely token-based (`tunnel
+#     run` + `TUNNEL_TOKEN`, no local ingress config file to edit).
+#
+# Usage: cp infra/.env.prod.example infra/.env.prod, fill it in, then
+#   docker compose -f infra/docker-compose.prod.yml --env-file infra/.env.prod build
+#   docker compose -f infra/docker-compose.prod.yml --env-file infra/.env.prod run --rm migrate
+#   docker compose -f infra/docker-compose.prod.yml --env-file infra/.env.prod up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pterocontrol-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: pterocontrol-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # One-off migration runner, NOT started by `up -d` (no `restart:`, and
+  # compose only starts services explicitly `run` or depended-on) - run
+  # deliberately, once, before/after `up` on every deploy that has new
+  # migrations. Same image as control-plane-api, different command -
+  # verified live in this session that this exact pattern (this image,
+  # `npx prisma migrate deploy`) actually works against a real Postgres.
+  migrate:
+    build:
+      context: ..
+      dockerfile: services/control-plane-api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["npx", "prisma", "migrate", "deploy", "--schema", "services/control-plane-api/prisma/schema.prisma"]
+
+  control-plane-api:
+    build:
+      context: ..
+      dockerfile: services/control-plane-api/Dockerfile
+    container_name: pterocontrol-control-plane-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      SECRETS_MASTER_KEY: ${SECRETS_MASTER_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      # Optional - unset means empty string means SsrfValidatorService
+      # trusts nothing extra, today's exact strict behavior. `.env.prod`
+      # values are NOT auto-injected into a container's environment;
+      # they only take effect where explicitly referenced with ${...}
+      # here, which is why this line has to exist at all.
+      TRUSTED_PTERODACTYL_ORIGINS: ${TRUSTED_PTERODACTYL_ORIGINS:-}
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    # No `ports:` - reached over Docker networks only: `default` for
+    # prometheus's scrape, `ingress` for the server's existing
+    # cloudflared tunnel. Nothing binds to the host's network interfaces
+    # at all.
+    networks:
+      - default
+      - ingress
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  federation-worker:
+    build:
+      context: ..
+      dockerfile: services/federation-worker/Dockerfile
+    container_name: pterocontrol-federation-worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      SECRETS_MASTER_KEY: ${SECRETS_MASTER_KEY}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      # Must match control-plane-api's value exactly - see that
+      # service's own comment on this same var above.
+      TRUSTED_PTERODACTYL_ORIGINS: ${TRUSTED_PTERODACTYL_ORIGINS:-}
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pterocontrol-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - control-plane-api
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: pterocontrol-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    # On `ingress` too (optional but recommended) so the existing tunnel
+    # can also route a hostname straight to Grafana if you want it
+    # reachable - see infra/DEPLOYMENT.md. Never add a route for
+    # `prometheus:9090` itself; it has no auth of its own.
+    networks:
+      - default
+      - ingress
+
+networks:
+  default:
+  # Must already exist on the target host - created by/for the server's
+  # existing Cloudflare Tunnel setup, not by this compose file. `docker
+  # compose up` fails loudly if it doesn't exist, rather than silently
+  # creating a same-named-but-different network.
+  ingress:
+    external: true
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  prometheus_data:
+  grafana_data:

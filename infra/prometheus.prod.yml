@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: control-plane-api
+    # Service name on the docker-compose.prod.yml network, not a public
+    # hostname - Prometheus and control-plane-api share that network
+    # directly, this never goes anywhere near the Cloudflare Tunnel.
+    static_configs:
+      - targets: ['control-plane-api:3000']
+
+  # federation-worker has no /metrics endpoint yet (no HTTP server to hang
+  # one off - see MetricsModule's own doc comment). Not scraped here; add
+  # a target once that gap is closed.

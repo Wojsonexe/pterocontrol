@@ -1,0 +1,27 @@
+# Applies to every `docker build` in this repo - all of them use the repo
+# root as build context (npm workspaces need the whole monorepo, not just
+# one service directory) even though each service has its own Dockerfile.
+
+node_modules
+**/node_modules
+**/dist
+**/.turbo
+
+# Flutter app - never needed to build a backend image.
+lib
+android
+ios
+test
+build
+.dart_tool
+*.iml
+
+# Local/dev-only, never belongs in an image.
+.env
+.env.*
+!**/.env.example
+*.log
+coverage
+.git
+.vscode
+.idea

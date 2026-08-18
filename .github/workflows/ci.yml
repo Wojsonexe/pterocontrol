@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, 'feature/**']
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (typecheck, lint, unit tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The three packages/* workspaces are consumed via their dist/
+      # output (main/types point at dist/index.js in each package.json),
+      # and Prisma's generated client only exists after `prisma
+      # generate` runs - the Dockerfiles' build stage does both before
+      # compiling the apps (see services/*/Dockerfile), so CI has to
+      # match that or every workspace importing @pterocontrol/* or
+      # @prisma/client fails to resolve. Found live: this exact gap
+      # made every job in this file fail the first time it ever ran on
+      # a real GitHub Actions runner, despite passing locally against a
+      # throwaway container that (accidentally, at the time) always
+      # built these first.
+      - name: Build shared packages
+        run: |
+          npm run build --workspace=@pterocontrol/pterodactyl-sdk
+          npm run build --workspace=@pterocontrol/rabbitmq
+          npm run build --workspace=@pterocontrol/secrets
+
+      - name: Prisma generate
+        run: npx prisma generate --schema services/control-plane-api/prisma/schema.prisma
+
+      - name: Typecheck (all workspaces)
+        run: npm run typecheck --workspaces --if-present
+
+      - name: Lint (all workspaces)
+        run: npm run lint --workspaces --if-present
+
+      - name: Unit tests (all workspaces)
+        run: npm run test --workspaces --if-present
+
+  backend-e2e:
+    name: Backend E2E (control-plane-api, real Docker Postgres+RabbitMQ)
+    runs-on: ubuntu-latest
+    # Postgres/RabbitMQ as GitHub Actions' own services:, not spun up by
+    # global-setup.js's usual `docker run` path (see that file's doc
+    # comment) - found live that a raw `docker run` for RabbitMQ
+    # specifically hits "Error when reading /var/lib/rabbitmq/
+    # .erlang.cookie: eacces" on this runner no matter what (five
+    # different mitigations, byte-identical error every time), which
+    # points at how this runner's Docker daemon handles a
+    # container-internal path becoming its own mount. services: are
+    # orchestrated by GitHub Actions' own runner code, a different
+    # mechanism entirely, and don't hit this. global-setup.js detects
+    # CI=true (GitHub Actions sets this itself) and only waits for
+    # these to be reachable rather than creating them.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pterocontrol_e2e
+          POSTGRES_PASSWORD: pterocontrol_e2e
+          POSTGRES_DB: pterocontrol_e2e
+        ports:
+          - 5479:5432
+        options: >-
+          --health-cmd "pg_isready -U pterocontrol_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:3-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: pterocontrol_e2e
+          RABBITMQ_DEFAULT_PASS: pterocontrol_e2e
+        ports:
+          - 5679:5672
+          - 15679:15672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Same reason as the `backend` job above - control-plane-api's own
+      # E2E suite imports @pterocontrol/* and @prisma/client too.
+      - name: Build shared packages
+        run: |
+          npm run build --workspace=@pterocontrol/pterodactyl-sdk
+          npm run build --workspace=@pterocontrol/rabbitmq
+          npm run build --workspace=@pterocontrol/secrets
+
+      - name: Prisma generate
+        run: npx prisma generate --schema services/control-plane-api/prisma/schema.prisma
+
+      - name: Run E2E suite
+        working-directory: services/control-plane-api
+        run: npm run test:e2e
+
+  docker-build:
+    name: Docker image build (control-plane-api, federation-worker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build-only smoke test - proves both Dockerfiles still produce a
+      # working image (this is exactly the class of bug a plain `npm run
+      # build` never catches: nest build's dist/src/main.js vs a plain
+      # tsc build's flat dist/main.js was a real, live-found mismatch
+      # during this repo's own Dockerfile authoring). Not pushed anywhere;
+      # publishing to a registry is a deployment-target decision, not a CI
+      # concern - see IMPLEMENTATION_STATUS.md, "Następny konkretny krok".
+      - name: Build control-plane-api image
+        run: docker build -f services/control-plane-api/Dockerfile -t pterocontrol-control-plane-api:ci .
+
+      - name: Build federation-worker image
+        run: docker build -f services/federation-worker/Dockerfile -t pterocontrol-federation-worker:ci .
+
+  flutter:
+    name: Flutter (analyze, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test

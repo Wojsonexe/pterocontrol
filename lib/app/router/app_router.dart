@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../features/activity/presentation/screens/activity_screen.dart';
+import '../../features/control_plane/presentation/screens/control_plane_home_screen.dart';
+import '../../features/control_plane/presentation/screens/control_plane_server_detail_screen.dart';
 import '../../features/dashboard/presentation/screens/dashboard_screen.dart';
 import '../../features/instances/presentation/screens/add_instance_screen.dart';
 import '../../features/instances/presentation/screens/instances_screen.dart';
@@ -107,6 +109,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                   GoRoute(
                     path: 'about',
                     builder: (context, state) => const AboutScreen(),
+                  ),
+                  GoRoute(
+                    path: 'control-plane',
+                    builder: (context, state) => const ControlPlaneHomeScreen(),
+                    routes: [
+                      GoRoute(
+                        path: AppRoutes.controlPlaneServerDetailPattern,
+                        builder: (context, state) {
+                          final serverId = state.pathParameters['serverId']!;
+                          return ControlPlaneServerDetailScreen(serverId: serverId);
+                        },
+                      ),
+                    ],
                   ),
                 ],
               ),

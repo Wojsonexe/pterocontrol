@@ -37,4 +37,17 @@ abstract final class AppRoutes {
   static const settingsAccount = '/app/settings/account';
   static const settingsSecurity = '/app/settings/security';
   static const settingsAbout = '/app/settings/about';
+
+  /// Control Plane mode (`features/control_plane`) — a separate, parallel
+  /// flow from the Pterodactyl-direct panels above, reachable from
+  /// Settings but not part of the `/app` shell's per-instance assumptions.
+  /// See IMPLEMENTATION_STATUS.md, "Flutter — tryb Control Plane".
+  static const settingsControlPlane = '/app/settings/control-plane';
+
+  /// Path template registered with go_router, nested under
+  /// [settingsControlPlane].
+  static const controlPlaneServerDetailPattern = 'servers/:serverId';
+
+  static String controlPlaneServerDetail(String serverId) =>
+      '$settingsControlPlane/servers/$serverId';
 }

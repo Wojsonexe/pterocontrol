@@ -55,8 +55,39 @@ app.*.map.json
 .env
 .env.*
 *.env
-**/secrets.*
+# Scoped to actual credential-dump extensions, NOT a bare `**/secrets.*` -
+# that wildcard silently matched legitimate source files too (found live:
+# services/federation-worker/src/secrets/secrets.module.ts was never
+# committed because of exactly this, and a fresh `git clone` + Docker
+# build failed with a real MODULE_NOT_FOUND-style TS error as a result -
+# `npm run build`/`typecheck` locally never caught it because the
+# untracked file was still physically on disk).
+**/secrets.json
+**/secrets.yaml
+**/secrets.yml
+**/secrets.env
+**/secrets.txt
 **/*.secret
 **/*credentials*.json
 **/*credentials*.yaml
 **/*credentials*.yml
+
+# Node / backend workspaces (services/*, packages/*) — Control Plane
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+
+# .env.* wyżej w tym pliku łapie też .env.example — to jedyny świadomy
+# wyjątek: .env.example to bezpieczny, commitowany szablon bez sekretów.
+!**/.env.example
+# Ten sam wyjątek dla infra/.env.prod.example (szablon dla docker-compose.prod.yml).
+!**/.env.prod.example
+
+# **/secrets.* wyżej w tym pliku (myślane pod pliki typu secrets.json)
+# łapie też legalne pliki źródłowe zaczynające się od "secrets." —
+# np. secrets.module.ts / secrets.service.ts. Wyjątek dla całego
+# katalogu modułu secrets w control-plane-api, żeby to się nie
+# powtórzyło przy kolejnych plikach w tym katalogu.
+!services/control-plane-api/src/secrets/**

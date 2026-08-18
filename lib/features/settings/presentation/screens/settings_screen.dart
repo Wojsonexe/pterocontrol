@@ -49,6 +49,17 @@ class SettingsScreen extends ConsumerWidget {
             ],
           ),
           _SettingsGroup(
+            title: 'Control Plane',
+            tiles: [
+              _SettingsTile(
+                icon: Icons.hub_outlined,
+                title: 'Konto Control Plane',
+                subtitle: 'Zarządzaj serwerami z wielu paneli przez jedno konto',
+                onTap: () => context.push(AppRoutes.settingsControlPlane),
+              ),
+            ],
+          ),
+          _SettingsGroup(
             title: 'Aplikacja',
             tiles: [
               _SettingsTile(

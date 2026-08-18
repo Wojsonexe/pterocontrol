@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import '../../servers/domain/server_power_state.dart';
 import '../../servers/domain/server_runtime_state.dart';
@@ -41,17 +42,46 @@ const _refreshableJwtErrorSubstrings = [
   'jwt: created too far in past (denylist)',
 ];
 
-/// Default reconnect backoff: 1s, 2s, 4s, 8s, 16s, then capped at 30s.
+/// Base reconnect schedule: 1s, 2s, 4s, 8s, 16s, then capped at 30s.
 ///
 /// A plain function (not a method) so tests can substitute a
 /// near-instant schedule instead of waiting on real timers, and so the
 /// schedule itself is unit-testable in isolation from any connection
-/// logic.
+/// logic. Deliberately kept deterministic/unjittered — [_jitteredBackoff]
+/// (this repository's actual default) wraps it; this one stays exact so
+/// "what does attempt N nominally wait" remains simple to assert in
+/// tests and reason about on its own.
 Duration defaultConsoleReconnectBackoff(int attempt) {
   final steps = attempt.clamp(0, 5);
   final seconds = 1 << steps; // 1, 2, 4, 8, 16, 32
   return Duration(seconds: seconds > 30 ? 30 : seconds);
 }
+
+/// "Equal jitter" (base/2 fixed + up to base/2 random) over
+/// [defaultConsoleReconnectBackoff] — the actual default schedule
+/// [ConsoleRepositoryImpl] reconnects on.
+///
+/// Plain exponential backoff alone still synchronizes every device that
+/// dropped its connection at the same moment (a Wings restart, a node
+/// network blip) onto the *same* retry instants, which just moves the
+/// thundering herd from t=0 to t=1s, t=2s, .... Equal jitter keeps the
+/// schedule's growth guarantee (attempt N+1 never waits less than
+/// attempt N's minimum) while spreading concurrent retries across a
+/// window instead of a single instant — the same strategy AWS's
+/// architecture blog recommends over "full" jitter (which can let a late
+/// attempt roll a delay as short as attempt 0's).
+///
+/// [random] is injectable so a test can assert the resulting range is
+/// exactly `[base/2, base]` without depending on real randomness.
+Duration jitteredConsoleReconnectBackoff(int attempt, {Random? random}) {
+  final base = defaultConsoleReconnectBackoff(attempt);
+  final halfMs = base.inMilliseconds ~/ 2;
+  if (halfMs <= 0) return base;
+  final jitterMs = (random ?? _sharedRandom).nextInt(halfMs + 1);
+  return Duration(milliseconds: halfMs + jitterMs);
+}
+
+final _sharedRandom = Random();
 
 /// Real [ConsoleRepository]: fetches a websocket token via [ConsoleApi],
 /// opens a [ConsoleTransport] (production: a real WebSocket; tests: a
@@ -71,7 +101,7 @@ class ConsoleRepositoryImpl implements ConsoleRepository {
   })  : _api = api,
         _serverIdentifier = serverIdentifier,
         _transportConnector = transportConnector,
-        _backoffForAttempt = backoffForAttempt ?? defaultConsoleReconnectBackoff,
+        _backoffForAttempt = backoffForAttempt ?? jitteredConsoleReconnectBackoff,
         _maxBufferSize = maxBufferSize,
         assert(maxBufferSize > 0, 'maxBufferSize must be positive');
 
@@ -222,6 +252,13 @@ class ConsoleRepositoryImpl implements ConsoleRepository {
     _messageSubscription = client.messages.listen(_handleProtocolMessage);
     unawaited(client.done.then((_) => _handleTransportClosed(client)));
 
+    // The transport itself is open at this point — what's left is Wings'
+    // own `auth`/`auth success` round trip, a distinct failure mode from
+    // "could not open a socket at all" (see `ConsoleConnectionState`'s
+    // doc comment). Set regardless of attempt number: a reconnect that
+    // gets this far should stop reading as "reconnecting" the moment
+    // there is something more specific to report.
+    _setConnectionState(ConsoleConnectionState.authenticating);
     await client.send(ConsoleProtocolEvent.auth, [tokenDto.token]);
 
     _authTimeoutTimer?.cancel();
